@@ -1,7 +1,10 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:excel/excel.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:permission_handler/permission_handler.dart';
@@ -18,7 +21,7 @@ class LaporanPage extends StatefulWidget {
 class _LaporanPageState extends State<LaporanPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final NumberFormat _currencyFormatter = NumberFormat.decimalPattern('id_ID');
-
+  bool _isProcessing = false;
   String? _selectedFilterMethod;
   String? _userId;
 
@@ -29,7 +32,6 @@ class _LaporanPageState extends State<LaporanPage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // <-- PERUBAHAN 2: Ambil userId yang dikirim dari halaman sebelumnya
     final arguments = ModalRoute.of(context)?.settings.arguments;
     if (arguments is String) {
       if (_userId != arguments) {
@@ -47,10 +49,10 @@ class _LaporanPageState extends State<LaporanPage> {
   }
 
   Future<void> _exportToExcel(List<QueryDocumentSnapshot> transactions) async {
-    print("--- DEBUG: Tombol Export Ditekan ---");
+    print("--- DEBUG: Memulai proses ekspor... ---");
+    if (_isProcessing) return;
 
     if (transactions.isEmpty) {
-      print("--- DEBUG: Tidak ada data untuk diekspor. ---");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -62,26 +64,23 @@ class _LaporanPageState extends State<LaporanPage> {
       return;
     }
 
-    try {
-      var status = await Permission.storage.request();
-      if (status.isGranted) {
-        print("--- DEBUG: Izin penyimpanan DIBERIKAN. ---");
-        Directory? directory = await getExternalStorageDirectory();
-        if (directory == null) {
-          throw Exception(
-            "Tidak dapat menemukan direktori penyimpanan eksternal.",
-          );
-        }
-        final path =
-            '${directory.path}/laporan_transaksi_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx';
-        print("--- DEBUG: File akan disimpan di: $path ---");
-        final file = File(path);
+    setState(() {
+      _isProcessing = true;
+    });
 
-        print("--- DEBUG: Memulai proses pembuatan Excel... ---");
+    try {
+      // 1. Meminta Izin Penyimpanan
+      var status = await Permission.storage.request();
+
+      // 2. Menangani Status Izin
+      if (status.isGranted) {
+        print("--- DEBUG: Izin diberikan. Membuat file Excel... ---");
+        // Membuat file Excel
         var excel = Excel.createExcel();
         Sheet sheetObject = excel['Laporan Transaksi'];
 
-        List<CellValue> headers = [
+        // Menambahkan header
+        sheetObject.appendRow([
           TextCellValue('Tanggal'),
           TextCellValue('Metode Pembayaran'),
           TextCellValue('Rekening Sumber'),
@@ -89,9 +88,9 @@ class _LaporanPageState extends State<LaporanPage> {
           TextCellValue('Harga Jual Admin'),
           TextCellValue('Biaya Admin'),
           TextCellValue('Uang Bersih (Profit)'),
-        ];
-        sheetObject.appendRow(headers);
+        ]);
 
+        // Menambahkan data baris
         for (var doc in transactions) {
           final data = doc.data() as Map<String, dynamic>;
           final timestamp = (data['timestamp'] as Timestamp?)?.toDate();
@@ -99,7 +98,7 @@ class _LaporanPageState extends State<LaporanPage> {
               ? DateFormat('dd-MM-yyyy HH:mm').format(timestamp)
               : 'N/A';
 
-          List<CellValue> row = [
+          sheetObject.appendRow([
             TextCellValue(formattedDate),
             TextCellValue(data['nama_payment_method'] ?? ''),
             TextCellValue(data['nama_rekening'] ?? ''),
@@ -107,59 +106,70 @@ class _LaporanPageState extends State<LaporanPage> {
             IntCellValue((data['harga_jual_admin'] as num?)?.toInt() ?? 0),
             IntCellValue((data['biaya_admin'] as num?)?.toInt() ?? 0),
             IntCellValue((data['uang_bersih'] as num?)?.toInt() ?? 0),
-          ];
-          sheetObject.appendRow(row);
+          ]);
         }
 
-        print(
-          "--- DEBUG: Proses pembuatan Excel selesai. Mencoba menyimpan file... ---",
-        );
+        // 3. Menyimpan File ke Direktori 'Downloads'
+        String? selectedDirectory =
+            await FilePicker.platform.getDirectoryPath();
 
-        print("--- DEBUG: Meminta izin penyimpanan... ---");
-        var status = await Permission.storage.status;
-        if (!status.isGranted) {
-          status = await Permission.storage.request();
-        }
-
-        if (status.isGranted) {
-          print("--- DEBUG: Izin diberikan. Mencari direktori... ---");
-          final directory = await getApplicationDocumentsDirectory();
-          final path =
-              '${directory.path}/laporan_transaksi_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx';
-          print("--- DEBUG: File akan disimpan di: $path ---");
-          final file = File(path);
-
-          final excelData = excel.encode();
-          if (excelData != null) {
-            await file.writeAsBytes(excelData);
-            print("--- DEBUG: File berhasil ditulis. ---");
-
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Laporan berhasil disimpan di: $path'),
-                  backgroundColor: Colors.green,
-                ),
-              );
-            }
-          }
-        } else {
-          // Jika izin ditolak oleh pengguna
-          print("--- DEBUG: Izin penyimpanan DITOLAK oleh pengguna. ---");
+        if (selectedDirectory == null) {
+          // Pengguna membatalkan pemilihan folder
+          print("--- DEBUG: Pengguna membatalkan pemilihan folder. ---");
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text(
-                  'Izin penyimpanan diperlukan untuk mengekspor file.',
-                ),
-                backgroundColor: Colors.red,
+                content: Text('Ekspor dibatalkan.'),
+                backgroundColor: Colors.orange,
               ),
             );
           }
+          setState(() {
+            _isProcessing = false;
+          });
+          return;
+        }
+
+        final fileName =
+            'laporan_transaksi_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx';
+        final filePath = '$selectedDirectory/$fileName';
+        final file = File(filePath);
+
+        final excelData = excel.encode();
+        if (excelData != null) {
+          await file.writeAsBytes(excelData);
+          print("--- DEBUG: File berhasil disimpan di: $filePath ---");
+        }
+      } else if (status.isPermanentlyDenied) {
+        print("--- DEBUG: Izin ditolak permanen. ---");
+        // Jika izin ditolak permanen, arahkan pengguna ke pengaturan
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                'Izin penyimpanan ditolak permanen. Aktifkan di pengaturan aplikasi.',
+              ),
+              action: SnackBarAction(
+                label: 'Pengaturan',
+                onPressed: openAppSettings,
+              ),
+            ),
+          );
+        }
+      } else {
+        print("--- DEBUG: Izin ditolak. ---");
+        // Jika izin hanya ditolak
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Izin penyimpanan diperlukan untuk ekspor.'),
+              backgroundColor: Colors.red,
+            ),
+          );
         }
       }
     } catch (e) {
-      print("--- ERROR TERJADI SAAT EKSPOR: $e ---");
+      print("--- ERROR SAAT EKSPOR: $e ---");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -168,6 +178,10 @@ class _LaporanPageState extends State<LaporanPage> {
           ),
         );
       }
+    } finally {
+      setState(() {
+        _isProcessing = false;
+      });
     }
   }
 
@@ -647,14 +661,32 @@ class _LaporanPageState extends State<LaporanPage> {
                 return Column(
                   children: [
                     Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: ElevatedButton.icon(
-                        icon: const Icon(Icons.download),
-                        label: const Text('Export ke Excel'),
-                        onPressed: () => _exportToExcel(transactions),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green,
-                          foregroundColor: Colors.white,
+                      padding: const EdgeInsets.all(16.0),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          icon: _isProcessing
+                              ? Container(
+                                  width: 20,
+                                  height: 20,
+                                  child: const CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2.5,
+                                  ),
+                                )
+                              : const Icon(Icons.download),
+                          label: Text(
+                            _isProcessing ? 'MEMPROSES...' : 'Export ke Excel',
+                          ),
+                          onPressed: _isProcessing
+                              ? null
+                              : () => _exportToExcel(transactions),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            backgroundColor:
+                                _isProcessing ? Colors.grey : Colors.green,
+                            foregroundColor: Colors.white,
+                          ),
                         ),
                       ),
                     ),
@@ -684,8 +716,8 @@ class _LaporanPageState extends State<LaporanPage> {
                           ],
                           rows: transactions.map((doc) {
                             final data = doc.data() as Map<String, dynamic>;
-                            final timestamp = (data['timestamp'] as Timestamp?)
-                                ?.toDate();
+                            final timestamp =
+                                (data['timestamp'] as Timestamp?)?.toDate();
                             final formattedDate = timestamp != null
                                 ? DateFormat('dd/MM/yy HH:mm').format(timestamp)
                                 : 'N/A';
