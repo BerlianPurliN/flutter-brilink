@@ -1,13 +1,17 @@
 import 'package:file_picker/file_picker.dart';
+import 'package:file_saver/file_saver.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:excel/excel.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
 
 enum FilterType { none, byMethod, byDateRange }
 
@@ -49,7 +53,7 @@ class _LaporanPageState extends State<LaporanPage> {
   }
 
   Future<void> _exportToExcel(List<QueryDocumentSnapshot> transactions) async {
-    print("--- DEBUG: Memulai proses ekspor... ---");
+    print("--- DEBUG: Memulai proses ekspor Excel... ---");
     if (_isProcessing) return;
 
     if (transactions.isEmpty) {
@@ -69,111 +73,82 @@ class _LaporanPageState extends State<LaporanPage> {
     });
 
     try {
-      // 1. Meminta Izin Penyimpanan
-      var status = await Permission.storage.request();
+      // 1. Buat file Excel
+      var excel = Excel.createExcel();
+      Sheet sheetObject = excel['Laporan Transaksi'];
 
-      // 2. Menangani Status Izin
-      if (status.isGranted) {
-        print("--- DEBUG: Izin diberikan. Membuat file Excel... ---");
-        // Membuat file Excel
-        var excel = Excel.createExcel();
-        Sheet sheetObject = excel['Laporan Transaksi'];
+      // Header
+      sheetObject.appendRow([
+        TextCellValue('Tanggal'),
+        TextCellValue('Metode Pembayaran'),
+        TextCellValue('Rekening Saldo'),
+        TextCellValue('Rekening Cash'),
+        TextCellValue('Harga Beli'),
+        TextCellValue('Biaya Admin Dalam'),
+        TextCellValue('Biaya Admin'),
+        TextCellValue('Uang Bersih (Profit)'),
+      ]);
 
-        // Menambahkan header
+      // Data baris
+      for (var doc in transactions) {
+        final data = doc.data() as Map<String, dynamic>;
+        final timestamp = (data['timestamp'] as Timestamp?)?.toDate();
+        final formattedDate = timestamp != null
+            ? DateFormat('dd-MM-yyyy HH:mm').format(timestamp)
+            : 'N/A';
+
         sheetObject.appendRow([
-          TextCellValue('Tanggal'),
-          TextCellValue('Metode Pembayaran'),
-          TextCellValue('Rekening Sumber'),
-          TextCellValue('Harga Beli'),
-          TextCellValue('Harga Jual Admin'),
-          TextCellValue('Biaya Admin'),
-          TextCellValue('Uang Bersih (Profit)'),
+          TextCellValue(formattedDate),
+          TextCellValue(data['nama_payment_method'] ?? ''),
+          TextCellValue(data['nama_rekening'] ?? ''),
+          TextCellValue(data['nama_cash'] ?? ''),
+          TextCellValue(
+              'Rp ${_currencyFormatter.format((data['harga_beli'] as num?)?.toInt() ?? 0)}'),
+          TextCellValue(
+              'Rp ${_currencyFormatter.format((data['harga_jual_admin'] as num?)?.toInt() ?? 0)}'),
+          TextCellValue(
+              'Rp ${_currencyFormatter.format((data['biaya_admin'] as num?)?.toInt() ?? 0)}'),
+          TextCellValue(
+              'Rp ${_currencyFormatter.format((data['uang_profit'] as num?)?.toInt() ?? 0)}'),
         ]);
-
-        // Menambahkan data baris
-        for (var doc in transactions) {
-          final data = doc.data() as Map<String, dynamic>;
-          final timestamp = (data['timestamp'] as Timestamp?)?.toDate();
-          final formattedDate = timestamp != null
-              ? DateFormat('dd-MM-yyyy HH:mm').format(timestamp)
-              : 'N/A';
-
-          sheetObject.appendRow([
-            TextCellValue(formattedDate),
-            TextCellValue(data['nama_payment_method'] ?? ''),
-            TextCellValue(data['nama_rekening'] ?? ''),
-            IntCellValue((data['harga_beli'] as num?)?.toInt() ?? 0),
-            IntCellValue((data['harga_jual_admin'] as num?)?.toInt() ?? 0),
-            IntCellValue((data['biaya_admin'] as num?)?.toInt() ?? 0),
-            IntCellValue((data['uang_bersih'] as num?)?.toInt() ?? 0),
-          ]);
-        }
-
-        // 3. Menyimpan File ke Direktori 'Downloads'
-        String? selectedDirectory =
-            await FilePicker.platform.getDirectoryPath();
-
-        if (selectedDirectory == null) {
-          // Pengguna membatalkan pemilihan folder
-          print("--- DEBUG: Pengguna membatalkan pemilihan folder. ---");
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Ekspor dibatalkan.'),
-                backgroundColor: Colors.orange,
-              ),
-            );
-          }
-          setState(() {
-            _isProcessing = false;
-          });
-          return;
-        }
-
-        final fileName =
-            'laporan_transaksi_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx';
-        final filePath = '$selectedDirectory/$fileName';
-        final file = File(filePath);
-
-        final excelData = excel.encode();
-        if (excelData != null) {
-          await file.writeAsBytes(excelData);
-          print("--- DEBUG: File berhasil disimpan di: $filePath ---");
-        }
-      } else if (status.isPermanentlyDenied) {
-        print("--- DEBUG: Izin ditolak permanen. ---");
-        // Jika izin ditolak permanen, arahkan pengguna ke pengaturan
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text(
-                'Izin penyimpanan ditolak permanen. Aktifkan di pengaturan aplikasi.',
-              ),
-              action: SnackBarAction(
-                label: 'Pengaturan',
-                onPressed: openAppSettings,
-              ),
-            ),
-          );
-        }
-      } else {
-        print("--- DEBUG: Izin ditolak. ---");
-        // Jika izin hanya ditolak
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Izin penyimpanan diperlukan untuk ekspor.'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
       }
-    } catch (e) {
-      print("--- ERROR SAAT EKSPOR: $e ---");
+
+      // 2. Encode Excel ke bytes
+      final excelBytes = excel.encode();
+      if (excelBytes == null) throw Exception("Gagal mengenerate Excel.");
+
+      // 3. Simpan dengan FileSaver
+      final fileName =
+          'laporan_transaksi_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.xlsx';
+
+      final savedPath = await FileSaver.instance.saveFile(
+        name: fileName,
+        bytes: Uint8List.fromList(excelBytes),
+        ext: 'xlsx',
+        mimeType: MimeType.microsoftExcel,
+      );
+
+      print("--- DEBUG: Excel berhasil diekspor: $savedPath ---");
+
+      // 4. Langsung buka file setelah berhasil disimpan
+      if (savedPath != null) {
+        await OpenFilex.open(savedPath);
+      }
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Gagal mengekspor file: $e'),
+            content: Text('File Excel berhasil diekspor: $fileName'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print("--- ERROR SAAT EKSPOR EXCEL: $e ---");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Gagal mengekspor Excel: $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -432,7 +407,7 @@ class _LaporanPageState extends State<LaporanPage> {
               TextField(
                 controller: _hargaJualController,
                 decoration: const InputDecoration(
-                  labelText: 'Harga Jual Admin',
+                  labelText: 'Biaya Admin Dalam',
                 ),
                 keyboardType: TextInputType.number,
               ),
@@ -522,12 +497,20 @@ class _LaporanPageState extends State<LaporanPage> {
               children: [
                 _buildDetailRow('Tanggal', formattedDate),
                 _buildDetailRow(
+                  'Metode Transaksi',
+                  data['nama_transaction_method'] ?? '-',
+                ),
+                _buildDetailRow(
                   'Metode Pembayaran',
                   data['nama_payment_method'] ?? '-',
                 ),
                 _buildDetailRow(
-                  'Rekening Sumber',
+                  'Rekening Saldo',
                   data['nama_rekening'] ?? '-',
+                ),
+                _buildDetailRow(
+                  'Rekening Cash',
+                  data['nama_cash'] ?? '-',
                 ),
                 const Divider(height: 20),
                 _buildDetailRow(
@@ -535,7 +518,7 @@ class _LaporanPageState extends State<LaporanPage> {
                   'Rp ${_currencyFormatter.format(data['harga_beli'] ?? 0)}',
                 ),
                 _buildDetailRow(
-                  'Harga Jual Admin',
+                  'Biaya Admin Dalam',
                   'Rp ${_currencyFormatter.format(data['harga_jual_admin'] ?? 0)}',
                 ),
                 _buildDetailRow(
@@ -560,6 +543,170 @@ class _LaporanPageState extends State<LaporanPage> {
         );
       },
     );
+  }
+
+  Future<void> _exportToPdf(List<QueryDocumentSnapshot> transactions) async {
+    print("--- DEBUG: Memulai proses ekspor PDF... ---");
+    if (_isProcessing) return;
+
+    if (transactions.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Tidak ada data untuk diekspor.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+    });
+
+    try {
+      print("--- DEBUG: Membuat file PDF... ---");
+
+      final font = await rootBundle.load("assets/fonts/Roboto-Regular.ttf");
+      final boldFont = await rootBundle.load("assets/fonts/Roboto-Bold.ttf");
+      final ttf = pw.Font.ttf(font);
+      final boldTtf = pw.Font.ttf(boldFont);
+
+      final pdf = pw.Document();
+
+      final headers = [
+        'Tanggal',
+        'Metode',
+        'Rekening Saldo',
+        'Rekening Cash',
+        'Harga Beli',
+        'Biaya Admin Dalam',
+        'Biaya Admin Layanan',
+        'Profit'
+      ];
+      final data = transactions.map((doc) {
+        final d = doc.data() as Map<String, dynamic>;
+        final timestamp = (d['timestamp'] as Timestamp?)?.toDate();
+        final date = timestamp != null
+            ? DateFormat('dd/MM/yy HH:mm').format(timestamp)
+            : 'N/A';
+        final method = d['nama_payment_method'] ?? '-';
+        final rekening = d['nama_rekening'] ?? '-';
+        final rekeningCash = d['nama_cash'] ?? '-';
+        final hargaBeli =
+            'Rp ${_currencyFormatter.format(d['harga_beli'] ?? 0)}';
+        final hargaJual =
+            'Rp ${_currencyFormatter.format(d['harga_jual_admin'] ?? 0)}';
+        final biayaAdmin =
+            'Rp ${_currencyFormatter.format(d['biaya_admin'] ?? 0)}';
+        final profit = 'Rp ${_currencyFormatter.format(d['uang_profit'] ?? 0)}';
+        return [
+          date,
+          method,
+          rekening,
+          rekeningCash,
+          hargaBeli,
+          hargaJual,
+          biayaAdmin,
+          profit
+        ];
+      }).toList();
+
+      final totalProfit = transactions.fold<int>(0, (sum, doc) {
+        final d = doc.data() as Map<String, dynamic>;
+        return sum + ((d['uang_profit'] as num?)?.toInt() ?? 0);
+      });
+
+      pdf.addPage(
+        pw.MultiPage(
+          pageFormat: PdfPageFormat.a4,
+          header: (context) => pw.Container(
+            alignment: pw.Alignment.center,
+            margin: const pw.EdgeInsets.only(bottom: 20),
+            child: pw.Text('Laporan Transaksi',
+                style: pw.TextStyle(font: boldTtf, fontSize: 24)),
+          ),
+          build: (context) => [
+            pw.Table.fromTextArray(
+              headers: headers,
+              data: data,
+              headerStyle: pw.TextStyle(font: boldTtf, color: PdfColors.white),
+              headerDecoration:
+                  const pw.BoxDecoration(color: PdfColors.blueGrey700),
+              cellStyle: pw.TextStyle(font: ttf, fontSize: 10),
+              cellAlignments: {
+                3: pw.Alignment.centerRight,
+              },
+            ),
+            pw.Divider(height: 20),
+            pw.Container(
+              alignment: pw.Alignment.centerRight,
+              child: pw.Text(
+                'Total Profit: Rp ${_currencyFormatter.format(totalProfit)}',
+                style: pw.TextStyle(font: boldTtf, fontSize: 14),
+              ),
+            )
+          ],
+          footer: (context) => pw.Container(
+            alignment: pw.Alignment.centerRight,
+            margin: const pw.EdgeInsets.only(top: 10),
+            child: pw.Text(
+              'Halaman ${context.pageNumber} dari ${context.pagesCount}',
+              style: pw.TextStyle(
+                font: ttf,
+                fontSize: 8,
+                color: PdfColors.grey,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      // 🔑 Simpan dengan FileSaver
+      final pdfBytes = await pdf.save();
+      final fileName =
+          'laporan_transaksi_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.pdf';
+
+      final savedPath = await FileSaver.instance.saveFile(
+        name: fileName,
+        bytes: pdfBytes,
+        ext: "pdf",
+        mimeType: MimeType.pdf,
+      );
+
+      print("--- DEBUG: File berhasil disimpan di: $savedPath ---");
+
+      // ✅ Langsung buka file setelah tersimpan
+      if (savedPath != null) {
+        await OpenFilex.open(savedPath);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('PDF berhasil disimpan: $fileName'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print("--- ERROR SAAT EKSPOR PDF: $e ---");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Gagal mengekspor file: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+      }
+    }
   }
 
   Widget _buildDetailRow(String label, String value, {bool isBold = false}) {
@@ -662,32 +809,75 @@ class _LaporanPageState extends State<LaporanPage> {
                   children: [
                     Padding(
                       padding: const EdgeInsets.all(16.0),
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          icon: _isProcessing
-                              ? Container(
-                                  width: 20,
-                                  height: 20,
-                                  child: const CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2.5,
-                                  ),
-                                )
-                              : const Icon(Icons.download),
-                          label: Text(
-                            _isProcessing ? 'MEMPROSES...' : 'Export ke Excel',
+                      // 1. Ganti SizedBox dengan Row untuk menampung dua tombol
+                      child: Row(
+                        children: [
+                          // 2. Tombol Export Excel (gunakan Expanded agar lebarnya fleksibel)
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              icon: _isProcessing
+                                  ? Container(
+                                      width: 20,
+                                      height: 20,
+                                      padding: const EdgeInsets.all(2.0),
+                                      child: const CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2.5,
+                                      ),
+                                    )
+                                  : const Icon(
+                                      Icons.grid_on), // Icon untuk Excel
+                              label: Text(
+                                _isProcessing ? 'MEMPROSES...' : 'Export Excel',
+                              ),
+                              onPressed: _isProcessing
+                                  ? null
+                                  : () => _exportToExcel(transactions),
+                              style: ElevatedButton.styleFrom(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                backgroundColor:
+                                    _isProcessing ? Colors.grey : Colors.green,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
                           ),
-                          onPressed: _isProcessing
-                              ? null
-                              : () => _exportToExcel(transactions),
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            backgroundColor:
-                                _isProcessing ? Colors.grey : Colors.green,
-                            foregroundColor: Colors.white,
+
+                          // 3. Tambahkan Spasi di antara tombol
+                          const SizedBox(width: 16),
+
+                          // 4. Tombol Export PDF BARU (gunakan Expanded juga)
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              icon: _isProcessing
+                                  ? Container(
+                                      width: 20,
+                                      height: 20,
+                                      padding: const EdgeInsets.all(2.0),
+                                      child: const CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2.5,
+                                      ),
+                                    )
+                                  : const Icon(
+                                      Icons.picture_as_pdf), // Icon untuk PDF
+                              label: Text(
+                                _isProcessing ? 'MEMPROSES...' : 'Export PDF',
+                              ),
+                              onPressed: _isProcessing
+                                  ? null
+                                  : () => _exportToPdf(transactions),
+                              style: ElevatedButton.styleFrom(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                backgroundColor: _isProcessing
+                                    ? Colors.grey
+                                    : Colors.red, // Warna merah untuk PDF
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ),
                     ),
                     Expanded(
@@ -725,7 +915,7 @@ class _LaporanPageState extends State<LaporanPage> {
                               cells: [
                                 DataCell(Text(formattedDate)),
                                 DataCell(
-                                  Text(data['nama_payment_method'] ?? ''),
+                                  Text(data['nama_transaction_method'] ?? ''),
                                 ),
                                 DataCell(
                                   Row(

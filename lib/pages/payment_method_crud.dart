@@ -45,14 +45,14 @@ class _PaymentMethodCrudPageState extends State<PaymentMethodCrudPage> {
       builder: (context) {
         return AlertDialog(
           title: Text(
-            isEditing ? 'Edit Metode Pembayaran' : 'Tambah Metode Baru',
+            isEditing ? 'Edit Tujuan Pembayaran' : 'Tambah Tujuan Baru',
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(
                 controller: _nameController,
-                decoration: const InputDecoration(labelText: 'Nama Metode'),
+                decoration: const InputDecoration(labelText: 'Nama Tujuan'),
               ),
               TextField(
                 controller: _feeController,
@@ -144,12 +144,12 @@ class _PaymentMethodCrudPageState extends State<PaymentMethodCrudPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Atur Metode Pembayaran')),
+      appBar: AppBar(title: const Text('Atur Tujuan Pembayaran')),
       // Tombol untuk menambah data baru
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showAddOrEditDialog(),
         child: const Icon(Icons.add),
-        tooltip: 'Tambah Metode Baru',
+        tooltip: 'Tambah Tujuan Baru',
       ),
       body: _userId == null
           ? const Center(child: CircularProgressIndicator())
@@ -167,7 +167,7 @@ class _PaymentMethodCrudPageState extends State<PaymentMethodCrudPage> {
                 if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                   return const Center(
                     child: Text(
-                      'Belum ada metode pembayaran.\nSilakan tambahkan menggunakan tombol (+).',
+                      'Belum ada tujuan pembayaran.\nSilakan tambahkan menggunakan tombol (+).',
                       textAlign: TextAlign.center,
                     ),
                   );

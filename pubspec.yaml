@@ -20,6 +20,11 @@ dependencies:
   firebase_crashlytics: ^5.0.1
   file_picker: ^8.0.5
   flutter_launcher_icons: "^0.13.1"
+  pdf: ^3.10.8 
+  file_saver: ^0.2.9
+  open_filex: ^4.7.0
+  
+  
 
 dev_dependencies:
   flutter_test:
@@ -28,6 +33,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  assets:
+    - assets/fonts/
 
 flutter_launcher_icons:
   android: "launcher_icon"

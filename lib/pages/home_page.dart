@@ -1,3 +1,4 @@
+import 'package:brilink/pages/cash_crud_dialog.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter/material.dart';
 import 'package:brilink/services/auth_service.dart';
@@ -53,6 +54,67 @@ class Rekening extends Equatable {
   List<Object?> get props => [id];
 }
 
+class Cash extends Equatable {
+  final String id;
+  final String name;
+  final int balance;
+
+  const Cash({
+    required this.id,
+    required this.name,
+    required this.balance,
+  });
+
+  factory Cash.fromFirestore(DocumentSnapshot doc) {
+    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+
+    return Cash(
+      id: doc.id,
+      name: data['nama_kas'] ?? '',
+      balance: (data['saldo'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  @override
+  List<Object?> get props => [id];
+}
+
+class CurrencyInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
+    if (newValue.text.isEmpty) {
+      return newValue.copyWith(text: '');
+    }
+
+    final int value = int.parse(newValue.text);
+    final formatter = NumberFormat.decimalPattern('id_ID');
+    final String newText = formatter.format(value);
+
+    return newValue.copyWith(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newText.length),
+    );
+  }
+}
+
+class TransactionMethod extends Equatable {
+  final String id;
+  final String name;
+
+  const TransactionMethod({required this.id, required this.name});
+
+  factory TransactionMethod.fromFirestore(DocumentSnapshot doc) {
+    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+    return TransactionMethod(
+      id: doc.id,
+      name: data['metode_transaction'] ?? 'Tanpa Nama',
+    );
+  }
+  @override
+  List<Object?> get props => [id, name];
+}
+
 // --- HOME PAGE WIDGET ---
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -65,10 +127,19 @@ class _HomePageState extends State<HomePage> {
   final AuthService _authService = AuthService();
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final User? _currentUser = FirebaseAuth.instance.currentUser;
+  final List<String> _staticTransactionMethods = [
+    'Tarik Tunai',
+  ];
+
+  String? _selectedTransactionMethod;
+
+  Cash? _selectedCashAccount;
+
+  Future<List<String>>? _combinedMethodsFuture;
 
   // Form Controllers
   final _hargaBeliController = TextEditingController();
-  final _hargaJualController = TextEditingController();
+  final _biayaAdminDalamController = TextEditingController();
 
   // State Variables for Dropdowns
   PaymentMethod? _selectedPaymentMethod;
@@ -77,6 +148,30 @@ class _HomePageState extends State<HomePage> {
   // State variable for loading indicator
   bool _isSubmitting = false;
 
+  Future<List<String>> _getCombinedTransactionMethods() async {
+    if (_currentUser == null) return _staticTransactionMethods;
+
+    try {
+      final snapshot = await _firestore
+          .collection('users')
+          .doc(_currentUser!.uid)
+          .collection('transaction_methods')
+          .get();
+
+      final dynamicMethods = snapshot.docs
+          .map((doc) => doc['metode_transaction'] as String)
+          .toList();
+
+      final combinedSet = {..._staticTransactionMethods, ...dynamicMethods};
+
+      return combinedSet.toList();
+    } catch (e) {
+      print("Gagal mengambil metode transaksi dinamis: $e");
+
+      return _staticTransactionMethods;
+    }
+  }
+
   // Formatter for currency
   final NumberFormat _currencyFormatter = NumberFormat.currency(
     locale: 'id_ID',
@@ -84,15 +179,31 @@ class _HomePageState extends State<HomePage> {
     decimalDigits: 0,
   );
 
-  // --- DATA FETCHING & SUBMISSION LOGIC ---
-
-  // PERBAIKAN #3: Mengambil data dari sub-koleksi, bukan koleksi level atas
   Stream<QuerySnapshot> _getRekeningStream() {
     return _firestore
         .collection('users')
         .doc(_currentUser!.uid)
         .collection('rekening')
         .snapshots();
+  }
+
+  Stream<QuerySnapshot> _getCashStream() {
+    if (_currentUser == null) return const Stream.empty();
+    return _firestore
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .collection('cash')
+        .snapshots();
+  }
+
+  void _showCashCrud() {
+    if (_currentUser == null) return;
+    showDialog(
+      context: context,
+      builder: (context) {
+        return CashCrudDialog(userId: _currentUser!.uid);
+      },
+    );
   }
 
   Stream<QuerySnapshot> _getPaymentMethodsStream() {
@@ -110,9 +221,17 @@ class _HomePageState extends State<HomePage> {
         .snapshots();
   }
 
+  Stream<QuerySnapshot> _getTransactionMethodsStream() {
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .collection('transaction_methods')
+        .snapshots();
+  }
+
   void _clearForm() {
     _hargaBeliController.clear();
-    _hargaJualController.clear();
+    _biayaAdminDalamController.clear();
     setState(() {
       _selectedPaymentMethod = null;
       _selectedRekening = null;
@@ -131,10 +250,13 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _submitTransaction() async {
     if (_currentUser == null ||
+        _selectedTransactionMethod == null ||
         _selectedPaymentMethod == null ||
         _selectedRekening == null ||
+        (_selectedTransactionMethod == 'Tarik Tunai' &&
+            _selectedCashAccount == null) ||
         _hargaBeliController.text.isEmpty ||
-        _hargaJualController.text.isEmpty) {
+        _biayaAdminDalamController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Harap lengkapi semua field.'),
@@ -147,27 +269,35 @@ class _HomePageState extends State<HomePage> {
     setState(() => _isSubmitting = true);
 
     try {
-      // Ambil nilai dari form
       final hargaBeli = int.parse(
         _hargaBeliController.text.replaceAll('.', ''),
       );
-      final hargaJual = int.parse(
-        _hargaJualController.text.replaceAll('.', ''),
+      final biayaAdminDalam = int.parse(
+        _biayaAdminDalamController.text.replaceAll('.', ''),
       );
       final biayaAdmin = _selectedPaymentMethod!.fee;
 
-      final uangBersih = (hargaJual - biayaAdmin) - hargaBeli;
+      final uangBersih = (hargaBeli + biayaAdminDalam) - biayaAdmin;
+
+      final uangProfit = biayaAdminDalam - biayaAdmin;
+
+      final uangKotor = hargaBeli + biayaAdminDalam;
 
       // Siapkan data untuk transaksi baru
       final transactionData = {
         'uid_user': _currentUser!.uid,
         'uid_rekening': _selectedRekening!.id,
         'nama_rekening': _selectedRekening!.name,
+        'uid_cash': _selectedCashAccount?.id,
+        'nama_cash': _selectedCashAccount?.name,
+        'nama_transaction_method': _selectedTransactionMethod,
         'harga_beli': hargaBeli,
-        'harga_jual_admin': hargaJual,
+        'harga_jual_admin': biayaAdminDalam,
         'nama_payment_method': _selectedPaymentMethod!.name,
         'biaya_admin': biayaAdmin,
+        'uang_profit': uangProfit,
         'uang_bersih': uangBersih,
+        'uang_kotor': uangKotor,
         'timestamp': FieldValue.serverTimestamp(),
       };
 
@@ -182,10 +312,48 @@ class _HomePageState extends State<HomePage> {
 
       batch.set(_firestore.collection('transactions').doc(), transactionData);
 
-      // Operasi 2: Kurangi saldo rekening sebesar harga beli
-      batch.update(rekeningRef, {
-        'saldo': FieldValue.increment(-(hargaBeli + biayaAdmin)),
-      });
+      if (_selectedTransactionMethod == 'Tarik Tunai') {
+        print("DEBUG: Menjalankan logika Tarik Tunai");
+
+        final rekeningRef = _firestore
+            .collection('users')
+            .doc(_currentUser!.uid)
+            .collection('rekening')
+            .doc(_selectedRekening!.id);
+        final cashRef = _firestore
+            .collection('users')
+            .doc(_currentUser!.uid)
+            .collection('cash')
+            .doc(_selectedCashAccount!.id);
+
+        // Saldo Kas Tunai berkurang sebesar jumlah yang diambil pelanggan
+        batch.update(cashRef, {'saldo': FieldValue.increment(-hargaBeli)});
+
+        // Saldo Rekening bertambah sebesar profit
+        batch.update(rekeningRef, {'saldo': FieldValue.increment(uangBersih)});
+      } else {
+        // Skenario 2: Metode Lain (misal: Setor Tunai, Transfer)
+        print("DEBUG: Menjalankan logika Setor Tunai/Transfer");
+
+        // Referensi ke rekening (sumber dana digital) dan kas (tujuan profit)
+        final rekeningRef = _firestore
+            .collection('users')
+            .doc(_currentUser!.uid)
+            .collection('rekening')
+            .doc(_selectedRekening!.id);
+        final cashRef = _firestore
+            .collection('users')
+            .doc(_currentUser!.uid)
+            .collection('cash')
+            .doc(_selectedCashAccount!.id);
+
+        // Saldo Rekening berkurang sebesar total pengeluaran
+        batch.update(rekeningRef,
+            {'saldo': FieldValue.increment(-(hargaBeli + biayaAdminDalam))});
+
+        // Saldo Kas Tunai bertambah sebesar profit
+        batch.update(cashRef, {'saldo': FieldValue.increment(uangBersih)});
+      }
 
       // Jalankan kedua operasi
       await batch.commit();
@@ -215,8 +383,15 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _hargaBeliController.dispose();
-    _hargaJualController.dispose();
+    _biayaAdminDalamController.dispose();
     super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedTransactionMethod = _staticTransactionMethods[0];
+    _combinedMethodsFuture = _getCombinedTransactionMethods();
   }
 
   @override
@@ -229,10 +404,11 @@ class _HomePageState extends State<HomePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Kasir'),
+        title: const Text('Link Kasir'),
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
+            tooltip: 'Logout',
             onPressed: () async {
               await _authService.signOut();
             },
@@ -254,13 +430,13 @@ class _HomePageState extends State<HomePage> {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Text(
                     'Memuat...',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                   );
                 }
                 if (!snapshot.hasData || snapshot.hasError) {
                   return const Text(
                     'Selamat Datang 👋🏻',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                   );
                 }
 
@@ -288,19 +464,18 @@ class _HomePageState extends State<HomePage> {
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
                 _buildInfoCard(
-                  title: 'Cash',
+                  title: 'Total Saldo',
                   stream: _getRekeningStream(),
                   valueField: 'saldo',
                   onTap: _showRekeningCrud,
                 ),
-
                 _buildInfoCard(
-                  title: 'Saldo',
-                  stream: _getTransactionsStream(),
-                  valueField: 'uang_bersih',
+                  title: 'Total Cash',
+                  valueField: 'saldo',
+                  stream: _getCashStream(),
+                  onTap: _showCashCrud,
                 ),
                 const SizedBox(width: 16),
-
                 SizedBox(
                   width: MediaQuery.of(context).size.width * 0.18,
                   height: MediaQuery.of(context).size.width * 0.18,
@@ -341,6 +516,47 @@ class _HomePageState extends State<HomePage> {
             const SizedBox(height: 16),
 
             // --- BAGIAN FORM ---
+
+            // Dropdown Metode Transaksi
+            FutureBuilder<List<String>>(
+              future: _combinedMethodsFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final List<String> methodsList =
+                    snapshot.hasData && snapshot.data!.isNotEmpty
+                        ? snapshot.data!
+                        : _staticTransactionMethods;
+
+                return DropdownButtonFormField<String>(
+                  value: _selectedTransactionMethod,
+                  hint: const Text('Metode Transaksi'),
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.swap_horiz),
+                  ),
+                  items: methodsList.map((String method) {
+                    return DropdownMenuItem<String>(
+                      value: method,
+                      child: Text(method),
+                    );
+                  }).toList(),
+                  onChanged: (String? newValue) {
+                    setState(() {
+                      _selectedTransactionMethod = newValue;
+                    });
+                    // _checkFormCompletion();
+                  },
+                  validator: (value) =>
+                      value == null ? 'Metode transaksi wajib diisi' : null,
+                );
+              },
+            ),
+            const SizedBox(height: 8),
+
+            // Dropdown Metode Pembayaran
             StreamBuilder<QuerySnapshot>(
               stream: _getPaymentMethodsStream(),
               builder: (context, snapshot) {
@@ -353,9 +569,10 @@ class _HomePageState extends State<HomePage> {
 
                 return DropdownButtonFormField<PaymentMethod>(
                   value: _selectedPaymentMethod,
-                  hint: const Text('Pilih Metode Pembayaran'),
+                  hint: const Text('Tujuan Pembayaran'),
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.payment),
                   ),
                   items: paymentMethods.map((method) {
                     return DropdownMenuItem(
@@ -369,8 +586,9 @@ class _HomePageState extends State<HomePage> {
                 );
               },
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 8),
 
+            // Dropdown Rekening
             StreamBuilder<QuerySnapshot>(
               stream: _getRekeningStream(),
               builder: (context, snapshot) {
@@ -384,6 +602,7 @@ class _HomePageState extends State<HomePage> {
                   hint: const Text('Sumber Dana (Rekening)'),
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.account_balance_wallet),
                   ),
                   items: rekeningList.map((rekening) {
                     return DropdownMenuItem(
@@ -397,25 +616,81 @@ class _HomePageState extends State<HomePage> {
                 );
               },
             ),
+            const SizedBox(height: 8),
 
-            const SizedBox(height: 16),
-            // Input Harga Beli
+            // Dropdown Rekening Cash (Hanya tampil jika metode transaksi adalah "Tarik Tunai")
+            StreamBuilder<QuerySnapshot>(
+              stream: _firestore
+                  .collection('users')
+                  .doc(_currentUser!.uid)
+                  .collection('cash')
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) return const SizedBox.shrink();
+                if (snapshot.data!.docs.isEmpty) {
+                  return const Text('Anda belum memiliki akun kas tunai.',
+                      style: TextStyle(color: Colors.red));
+                }
+
+                final cashList = snapshot.data!.docs
+                    .map((doc) => Cash.fromFirestore(doc))
+                    .toList();
+
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 16.0),
+                  child: DropdownButtonFormField<Cash>(
+                    value: _selectedCashAccount,
+                    hint: const Text('Pilih Rekening Cash'),
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.wallet_giftcard),
+                    ),
+                    items: cashList.map((cash) {
+                      return DropdownMenuItem(
+                          value: cash, child: Text(cash.name));
+                    }).toList(),
+                    onChanged: (Cash? newValue) {
+                      setState(() {
+                        _selectedCashAccount = newValue;
+                      });
+                      // _checkFormCompletion();
+                    },
+                    validator: (value) => value == null
+                        ? 'Rekening tujuan profit wajib diisi'
+                        : null,
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 8),
+
+            // Input Nominal Transaksi
             TextFormField(
               controller: _hargaBeliController,
               keyboardType: TextInputType.number,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                CurrencyInputFormatter(),
+              ],
               decoration: const InputDecoration(
-                labelText: 'Harga Beli',
+                labelText: 'Jumlah Transaksi',
                 border: OutlineInputBorder(),
+                prefixText: 'Rp ',
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 8),
             // Input Harga Jual
             TextFormField(
-              controller: _hargaJualController,
+              controller: _biayaAdminDalamController,
               keyboardType: TextInputType.number,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                CurrencyInputFormatter(),
+              ],
               decoration: const InputDecoration(
-                labelText: 'Harga Jual Admin',
+                labelText: 'Biaya Admin',
                 border: OutlineInputBorder(),
+                prefixText: 'Rp ',
               ),
             ),
             const SizedBox(height: 8),
@@ -427,35 +702,57 @@ class _HomePageState extends State<HomePage> {
                 child: Text(
                   'Biaya Admin: ${_currencyFormatter.format(_selectedPaymentMethod!.fee)}',
                   style: const TextStyle(
-                    color: Colors.blueGrey,
+                    color: Colors.black,
                     fontStyle: FontStyle.italic,
                   ),
                 ),
               ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
             // Tombol Submit
             SizedBox(
               width: double.infinity,
               height: 50,
               child: ElevatedButton(
                 onPressed: _isSubmitting ? null : _submitTransaction,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue.shade400,
+                ),
                 child: _isSubmitting
                     ? const CircularProgressIndicator(color: Colors.white)
                     : const Text(
                         'SUBMIT TRANSAKSI',
                         style: TextStyle(
-                          color: Colors.blue,
+                          color: Colors.white,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
               ),
             ),
-            const SizedBox(height: 32),
+            const SizedBox(height: 16),
             Align(
               alignment: Alignment.centerLeft,
               child: ElevatedButton.icon(
                 onPressed: () {
-                  // Navigasi ke halaman CRUD dengan mengirim UID
+                  Navigator.pushNamed(
+                    context,
+                    '/transaction-method',
+                    arguments: _currentUser!.uid,
+                  );
+                },
+                icon: const Icon(Icons.settings, size: 20),
+                label: const Text('Atur Metode Transaksi'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue.shade400,
+                  foregroundColor: Colors.white,
+                  elevation: 2,
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: ElevatedButton.icon(
+                onPressed: () {
                   Navigator.pushNamed(
                     context,
                     '/payment-method',
@@ -463,10 +760,10 @@ class _HomePageState extends State<HomePage> {
                   );
                 },
                 icon: const Icon(Icons.settings, size: 20),
-                label: const Text('Atur Metode Pembayaran'),
+                label: const Text('Atur Tujuan Pembayaran'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.grey.shade200,
-                  foregroundColor: Colors.black87,
+                  backgroundColor: Colors.blue.shade400,
+                  foregroundColor: Colors.white,
                   shape: const StadiumBorder(),
                   elevation: 2,
                 ),
@@ -489,14 +786,18 @@ class _HomePageState extends State<HomePage> {
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Card(
-          elevation: 2,
+          color: Colors.blue.shade400,
           child: Padding(
             padding: const EdgeInsets.all(12.0),
             child: Column(
               children: [
                 Text(
                   title,
-                  style: TextStyle(fontSize: 16, color: Colors.grey.shade700),
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 StreamBuilder<QuerySnapshot>(
@@ -522,6 +823,7 @@ class _HomePageState extends State<HomePage> {
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
+                        color: Colors.white,
                       ),
                     );
                   },

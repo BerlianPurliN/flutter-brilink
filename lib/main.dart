@@ -33,7 +33,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter App',
+      title: 'Pembukuan Kasir',
       theme: ThemeData(primarySwatch: Colors.blue),
       home: const AuthWrapper(),
       routes: AppRoutes.routes,

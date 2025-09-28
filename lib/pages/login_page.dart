@@ -44,45 +44,41 @@ class _LoginPageState extends State<LoginPage> {
 
     if (result is User) {
       final User loggedInUser = result;
-
       try {
-        // Panggil service untuk membuat data default
+        print(
+            "DEBUG: Login berhasil. Mencoba memanggil createDefaultDataIfNotExist...");
         await _firestoreService.createDefaultDataIfNotExist(loggedInUser);
 
-        // Jika semua berhasil, tampilkan pesan dan navigasi
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Login Successful'),
-              backgroundColor: Colors.green,
-            ),
-          );
+          setState(() => _isLoading = false);
           Navigator.pushReplacementNamed(context, '/home');
         }
       } catch (e) {
         if (mounted) {
+          setState(() => _isLoading = false);
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Failed to setup account: $e'),
+              content: Text('Gagal menyiapkan akun: ${e.toString()}'),
               backgroundColor: Colors.red,
             ),
           );
+          await _authService.signOut();
         }
-      } finally {
-        // Pastikan loading indicator selalu berhenti
-        if (mounted) setState(() => _isLoading = false);
       }
     } else {
       setState(() => _isLoading = false);
       final errorMessage = result.toString();
 
+      // --- TAMBAHKAN PRINT DI SINI UNTUK MELIHAT ERROR ---
+      print("--- DEBUG: Login GAGAL. Pesan Error: $errorMessage ---");
+      // ----------------------------------------------------
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(errorMessage), backgroundColor: Colors.red),
       );
 
-      if (errorMessage ==
-              'Akses ditolak. Hanya customer yang diizinkan login.' ||
-          errorMessage == 'Data profil pengguna tidak ditemukan di database.') {
+      if (errorMessage.contains('Akses ditolak') ||
+          errorMessage.contains('Data profil pengguna tidak ditemukan')) {
         await _authService.signOut();
       }
     }
@@ -90,7 +86,6 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
-    // (Seluruh kode UI Anda di sini tetap sama, tidak perlu diubah)
     return Scaffold(
       appBar: AppBar(title: const Text('Login'), centerTitle: true),
       body: SafeArea(
