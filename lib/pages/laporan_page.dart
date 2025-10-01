@@ -528,7 +528,7 @@ class _LaporanPageState extends State<LaporanPage> {
                 const Divider(height: 20),
                 _buildDetailRow(
                   'Uang Bersih (Profit)',
-                  'Rp ${_currencyFormatter.format(data['uang_bersih'] ?? 0)}',
+                  'Rp ${_currencyFormatter.format(data['uang_profit'] ?? 0)}',
                   isBold: true,
                 ),
               ],

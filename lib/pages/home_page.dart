@@ -349,7 +349,7 @@ class _HomePageState extends State<HomePage> {
 
         // Saldo Rekening berkurang sebesar total pengeluaran
         batch.update(rekeningRef,
-            {'saldo': FieldValue.increment(-(hargaBeli + biayaAdminDalam))});
+            {'saldo': FieldValue.increment(-hargaBeli)}); 
 
         // Saldo Kas Tunai bertambah sebesar profit
         batch.update(cashRef, {'saldo': FieldValue.increment(uangBersih)});
