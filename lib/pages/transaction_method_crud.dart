@@ -60,7 +60,7 @@ class _TransactionMethodsPageState extends State<TransactionMethodsPage> {
   void _showAddEditDialog({DocumentSnapshot? doc}) {
     final isEditing = doc != null;
     final TextEditingController controller = TextEditingController(
-      text: isEditing ? doc!['metode_transaction'] : '',
+      text: isEditing ? doc['metode_transaction'] : '',
     );
 
     showDialog(

@@ -1,22 +1,20 @@
-import 'package:file_picker/file_picker.dart';
-import 'package:file_saver/file_saver.dart';
-import 'package:flutter/material.dart';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:excel/excel.dart';
+import 'package:file_saver/file_saver.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-import 'package:excel/excel.dart';
 import 'package:open_filex/open_filex.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'dart:io';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 enum FilterType { none, byMethod, byDateRange }
 
 class LaporanPage extends StatefulWidget {
-  const LaporanPage({super.key});
+  final String? userId;
+  const LaporanPage({super.key, this.userId});
 
   @override
   State<LaporanPage> createState() => _LaporanPageState();
@@ -34,22 +32,9 @@ class _LaporanPageState extends State<LaporanPage> {
   DateTimeRange? _selectedDateRange;
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final arguments = ModalRoute.of(context)?.settings.arguments;
-    if (arguments is String) {
-      if (_userId != arguments) {
-        print("--- DEBUG 1: User ID diterima di LaporanPage ---");
-        print("UserID: $arguments");
-        setState(() {
-          _userId = arguments;
-        });
-      }
-    } else {
-      print(
-        "--- DEBUG 1.1: Tidak ada User ID yang diterima di LaporanPage ---",
-      );
-    }
+  void initState() {
+    super.initState();
+    _userId = widget.userId ?? FirebaseAuth.instance.currentUser?.uid;
   }
 
   Future<void> _exportToExcel(List<QueryDocumentSnapshot> transactions) async {
@@ -131,10 +116,8 @@ class _LaporanPageState extends State<LaporanPage> {
       print("--- DEBUG: Excel berhasil diekspor: $savedPath ---");
 
       // 4. Langsung buka file setelah berhasil disimpan
-      if (savedPath != null) {
-        await OpenFilex.open(savedPath);
-      }
-
+      await OpenFilex.open(savedPath);
+    
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -224,7 +207,7 @@ class _LaporanPageState extends State<LaporanPage> {
       ...snapshot.docs
           .map((doc) => (doc.data())['nama_payment_method'] as String)
           .toSet()
-          .toList(),
+          ,
     ];
 
     if (!mounted) return;
@@ -312,8 +295,20 @@ class _LaporanPageState extends State<LaporanPage> {
 
   Future<void> _deleteTransaction(DocumentSnapshot doc) async {
     final data = doc.data() as Map<String, dynamic>;
-    final hargaBeli = data['harga_beli'] as int;
-    final rekeningId = data['uid_rekening'] as String;
+    final hargaBeli = (data['harga_beli'] as num?)?.toInt() ?? 0;
+    final rekeningId = data['uid_rekening'] as String?;
+
+    if (rekeningId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Error: Missing rekening ID in transaction.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
 
     // Tampilkan dialog konfirmasi terlebih dahulu
     final bool? confirm = await showDialog(
@@ -379,10 +374,10 @@ class _LaporanPageState extends State<LaporanPage> {
   void _showEditTransactionDialog(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
 
-    final _hargaBeliController = TextEditingController(
+    final hargaBeliController = TextEditingController(
       text: data['harga_beli'].toString(),
     );
-    final _hargaJualController = TextEditingController(
+    final hargaJualController = TextEditingController(
       text: data['harga_jual_admin'].toString(),
     );
 
@@ -400,12 +395,12 @@ class _LaporanPageState extends State<LaporanPage> {
               ),
               const SizedBox(height: 16),
               TextField(
-                controller: _hargaBeliController,
+                controller: hargaBeliController,
                 decoration: const InputDecoration(labelText: 'Harga Beli'),
                 keyboardType: TextInputType.number,
               ),
               TextField(
-                controller: _hargaJualController,
+                controller: hargaJualController,
                 decoration: const InputDecoration(
                   labelText: 'Biaya Admin Dalam',
                 ),
@@ -420,17 +415,17 @@ class _LaporanPageState extends State<LaporanPage> {
             ),
             ElevatedButton(
               onPressed: () async {
-                final int oldHargaBeli = data['harga_beli'];
+                final int oldHargaBeli = (data['harga_beli'] as num?)?.toInt() ?? 0;
                 final int? newHargaBeli = int.tryParse(
-                  _hargaBeliController.text,
+                  hargaBeliController.text,
                 );
                 final int? newHargaJual = int.tryParse(
-                  _hargaJualController.text,
+                  hargaJualController.text,
                 );
 
                 if (newHargaBeli != null && newHargaJual != null) {
                   // Hitung ulang uang bersih
-                  final int biayaAdmin = data['biaya_admin'];
+                  final int biayaAdmin = (data['biaya_admin'] as num?)?.toInt() ?? 0;
                   final int newUangBersih =
                       (newHargaJual - biayaAdmin) - newHargaBeli;
 
@@ -438,11 +433,20 @@ class _LaporanPageState extends State<LaporanPage> {
                   final int deltaSaldo = oldHargaBeli - newHargaBeli;
 
                   try {
+                    final rekeningId = data['uid_rekening'] as String?;
+                    if (rekeningId == null) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Error: Missing rekening ID.')),
+                        );
+                      }
+                      return;
+                    }
                     final rekeningRef = _firestore
                         .collection('users')
                         .doc(_userId)
                         .collection('rekening')
-                        .doc(data['uid_rekening']);
+                        .doc(rekeningId);
 
                     WriteBatch batch = _firestore.batch();
 
@@ -678,10 +682,8 @@ class _LaporanPageState extends State<LaporanPage> {
       print("--- DEBUG: File berhasil disimpan di: $savedPath ---");
 
       // ✅ Langsung buka file setelah tersimpan
-      if (savedPath != null) {
-        await OpenFilex.open(savedPath);
-      }
-
+      await OpenFilex.open(savedPath);
+    
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

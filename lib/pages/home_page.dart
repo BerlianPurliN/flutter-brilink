@@ -531,7 +531,7 @@ class _HomePageState extends State<HomePage> {
                         : _staticTransactionMethods;
 
                 return DropdownButtonFormField<String>(
-                  value: _selectedTransactionMethod,
+                  initialValue: _selectedTransactionMethod,
                   hint: const Text('Metode Transaksi'),
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
@@ -560,15 +560,16 @@ class _HomePageState extends State<HomePage> {
             StreamBuilder<QuerySnapshot>(
               stream: _getPaymentMethodsStream(),
               builder: (context, snapshot) {
-                if (!snapshot.hasData)
+                if (!snapshot.hasData) {
                   return const Center(child: CircularProgressIndicator());
+                }
 
                 var paymentMethods = snapshot.data!.docs
                     .map((doc) => PaymentMethod.fromFirestore(doc))
                     .toList();
 
                 return DropdownButtonFormField<PaymentMethod>(
-                  value: _selectedPaymentMethod,
+                  initialValue: _selectedPaymentMethod,
                   hint: const Text('Tujuan Pembayaran'),
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
@@ -592,13 +593,14 @@ class _HomePageState extends State<HomePage> {
             StreamBuilder<QuerySnapshot>(
               stream: _getRekeningStream(),
               builder: (context, snapshot) {
-                if (!snapshot.hasData)
+                if (!snapshot.hasData) {
                   return const Center(child: CircularProgressIndicator());
+                }
                 var rekeningList = snapshot.data!.docs
                     .map((doc) => Rekening.fromFirestore(doc))
                     .toList();
                 return DropdownButtonFormField<Rekening>(
-                  value: _selectedRekening,
+                  initialValue: _selectedRekening,
                   hint: const Text('Sumber Dana (Rekening)'),
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
@@ -639,7 +641,7 @@ class _HomePageState extends State<HomePage> {
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 16.0),
                   child: DropdownButtonFormField<Cash>(
-                    value: _selectedCashAccount,
+                    initialValue: _selectedCashAccount,
                     hint: const Text('Pilih Rekening Cash'),
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),

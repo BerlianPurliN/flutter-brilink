@@ -19,10 +19,10 @@ class _RekeningCrudDialogState extends State<RekeningCrudDialog> {
   // Fungsi untuk menampilkan dialog Tambah atau Edit
   void _showAddOrEditDialog({DocumentSnapshot? doc}) {
     final bool isEditing = doc != null;
-    final _nameController = TextEditingController(
+    final nameController = TextEditingController(
       text: isEditing ? doc['nama_rekening'] : '',
     );
-    final _balanceController = TextEditingController(
+    final balanceController = TextEditingController(
       text: isEditing ? doc['saldo'].toString() : '',
     );
 
@@ -35,11 +35,11 @@ class _RekeningCrudDialogState extends State<RekeningCrudDialog> {
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(
-                controller: _nameController,
+                controller: nameController,
                 decoration: const InputDecoration(labelText: 'Nama Rekening'),
               ),
               TextField(
-                controller: _balanceController,
+                controller: balanceController,
                 decoration: const InputDecoration(labelText: 'Saldo Awal'),
                 keyboardType: TextInputType.number,
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
@@ -53,8 +53,8 @@ class _RekeningCrudDialogState extends State<RekeningCrudDialog> {
             ),
             ElevatedButton(
               onPressed: () async {
-                final String name = _nameController.text;
-                final int? balance = int.tryParse(_balanceController.text);
+                final String name = nameController.text;
+                final int? balance = int.tryParse(balanceController.text);
 
                 if (name.isNotEmpty && balance != null) {
                   final collectionRef = _firestore
@@ -143,8 +143,9 @@ class _RekeningCrudDialogState extends State<RekeningCrudDialog> {
               .collection('rekening')
               .snapshots(),
           builder: (context, snapshot) {
-            if (!snapshot.hasData)
+            if (!snapshot.hasData) {
               return const Center(child: CircularProgressIndicator());
+            }
             return ListView(
               shrinkWrap: true,
               children: snapshot.data!.docs.map((doc) {

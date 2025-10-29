@@ -75,4 +75,13 @@ class FirestoreService {
       print('Terjadi error saat inisialisasi sub-koleksi: $e');
     }
   }
+
+  Future<void> setUserStatus(String userId, bool isActive) async {
+    try {
+      await _db.collection('users').doc(userId).update({'isActive': isActive});
+    } catch (e) {
+      print('Error updating user status: $e');
+      rethrow;
+    }
+  }
 }

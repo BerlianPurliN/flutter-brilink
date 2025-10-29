@@ -33,10 +33,10 @@ class _PaymentMethodCrudPageState extends State<PaymentMethodCrudPage> {
   // Fungsi untuk menampilkan dialog Tambah atau Edit
   void _showAddOrEditDialog({DocumentSnapshot? doc}) {
     final bool isEditing = doc != null;
-    final _nameController = TextEditingController(
+    final nameController = TextEditingController(
       text: isEditing ? doc['nama_payment'] : '',
     );
-    final _feeController = TextEditingController(
+    final feeController = TextEditingController(
       text: isEditing ? doc['fee'].toString() : '',
     );
 
@@ -51,11 +51,11 @@ class _PaymentMethodCrudPageState extends State<PaymentMethodCrudPage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(
-                controller: _nameController,
+                controller: nameController,
                 decoration: const InputDecoration(labelText: 'Nama Tujuan'),
               ),
               TextField(
-                controller: _feeController,
+                controller: feeController,
                 decoration: const InputDecoration(
                   labelText: 'Biaya Admin (Fee)',
                 ),
@@ -71,8 +71,8 @@ class _PaymentMethodCrudPageState extends State<PaymentMethodCrudPage> {
             ),
             ElevatedButton(
               onPressed: () async {
-                final String name = _nameController.text;
-                final int? fee = int.tryParse(_feeController.text);
+                final String name = nameController.text;
+                final int? fee = int.tryParse(feeController.text);
 
                 if (name.isNotEmpty && fee != null) {
                   final collectionRef = _firestore
@@ -148,8 +148,8 @@ class _PaymentMethodCrudPageState extends State<PaymentMethodCrudPage> {
       // Tombol untuk menambah data baru
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showAddOrEditDialog(),
-        child: const Icon(Icons.add),
         tooltip: 'Tambah Tujuan Baru',
+        child: const Icon(Icons.add),
       ),
       body: _userId == null
           ? const Center(child: CircularProgressIndicator())

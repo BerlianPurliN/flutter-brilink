@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Helper Function ---
+    // Fungsi ini memeriksa role dari user yang sedang login (yang membuat request)
+    function isRole(roleName) {
+      // Perintah 'get' ini harus diotorisasi oleh aturan 'read' di bawah
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == roleName;
+    }
+
+    // ---------------- Users collection ----------------
+    match /users/{userId} {
+
+      // --- ATURAN READ (DIPERBAIKI) ---
+      
+      // 1. Izinkan user manapun untuk membaca DOKUMEN MEREKA SENDIRI.
+      //    Ini adalah aturan terpenting agar fungsi isRole() bisa bekerja.
+      allow read: if request.auth.uid == userId;
+
+      // 2. Izinkan 'super_admin' untuk membaca SEMUA dokumen user lain.
+      //    Ini yang mengizinkan query dropdown 'Select Admin Agen' bekerja.
+      allow read: if isRole('super_admin');
+
+      // 3. Izinkan 'admin_agen' untuk membaca 'kasir' yang mereka kelola.
+      allow read: if (isRole('admin_agen') && resource.data.managed_by == request.auth.uid);
+
+
+      // --- ATURAN WRITE ---
+
+      // 1. Izinkan user mengupdate dokumennya sendiri.
+      allow update: if request.auth.uid == userId;
+
+      // 2. Izinkan 'super_admin' untuk membuat, mengupdate, atau menghapus user manapun.
+      //    (Ini mengizinkan Anda membuat kasir DAN mengupdate array di admin_agen).
+      allow create, update, delete: if isRole('super_admin');
+    }
+
+    // ---------------- Transactions collection ----------------
+    match /transactions/{transactionId} {
+      
+      // Super Admin full access
+      allow read, write: if isRole('super_admin');
+
+      // Admin Agen can read transactions of their managed kasir
+      allow read: if isRole('admin_agen')
+                  && resource.data.uid_user in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.managed_kasir_ids;
+
+      // Kasir can read/write only their own transactions
+      allow read, write: if request.auth.uid == resource.data.uid_user;
+    }
+
+    // ---------------- Subcollections under users ----------------
+    match /users/{userId}/{subcollection}/{docId} {
+      allow read, write: if request.auth.uid == userId
+                         || isRole('super_admin');
+    }
+  }
+}

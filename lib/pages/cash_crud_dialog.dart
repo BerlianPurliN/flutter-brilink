@@ -19,9 +19,9 @@ class _CashCrudDialogState extends State<CashCrudDialog> {
   // Fungsi untuk menampilkan dialog Tambah atau Edit Kas
   void _showAddOrEditDialog({DocumentSnapshot? doc}) {
     final bool isEditing = doc != null;
-    final _nameController =
+    final nameController =
         TextEditingController(text: isEditing ? doc['nama_kas'] : '');
-    final _balanceController =
+    final balanceController =
         TextEditingController(text: isEditing ? doc['saldo'].toString() : '');
 
     showDialog(
@@ -33,12 +33,12 @@ class _CashCrudDialogState extends State<CashCrudDialog> {
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(
-                controller: _nameController,
+                controller: nameController,
                 decoration: const InputDecoration(
                     labelText: 'Nama Kas (cth: Kas Toko)'),
               ),
               TextField(
-                controller: _balanceController,
+                controller: balanceController,
                 decoration: const InputDecoration(labelText: 'Saldo Saat Ini'),
                 keyboardType: TextInputType.number,
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
@@ -51,8 +51,8 @@ class _CashCrudDialogState extends State<CashCrudDialog> {
                 child: const Text('Batal')),
             ElevatedButton(
               onPressed: () async {
-                final String name = _nameController.text;
-                final int? balance = int.tryParse(_balanceController.text);
+                final String name = nameController.text;
+                final int? balance = int.tryParse(balanceController.text);
 
                 if (name.isNotEmpty && balance != null) {
                   final collectionRef = _firestore
@@ -136,10 +136,12 @@ class _CashCrudDialogState extends State<CashCrudDialog> {
               .orderBy('createdAt')
               .snapshots(),
           builder: (context, snapshot) {
-            if (!snapshot.hasData)
+            if (!snapshot.hasData) {
               return const Center(child: CircularProgressIndicator());
-            if (snapshot.data!.docs.isEmpty)
+            }
+            if (snapshot.data!.docs.isEmpty) {
               return const Center(child: Text('Belum ada kas tunai.'));
+            }
 
             return ListView(
               shrinkWrap: true,

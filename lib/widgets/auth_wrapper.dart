@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:brilink/pages/home_page.dart';
 import 'package:brilink/pages/login_page.dart';
 import 'package:brilink/services/auth_service.dart';
+import 'package:brilink/widgets/role_router.dart';
 
 class AuthWrapper extends StatelessWidget {
   const AuthWrapper({super.key});
@@ -25,7 +25,7 @@ class AuthWrapper extends StatelessWidget {
 
         // If the snapshot has data, the user is logged in
         if (snapshot.hasData) {
-          return const HomePage();
+          return const RoleRouter();
         }
 
         // If the snapshot has no data, the user is logged out
