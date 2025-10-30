@@ -25,6 +25,7 @@ class _LaporanPageState extends State<LaporanPage> {
   bool _isProcessing = false;
   String? _selectedFilterMethod;
   String? _adminAgenId; // Mengganti nama _userId
+  String? _userRole;
 
   FilterType _activeFilter = FilterType.none;
   String? _selectedMethod; // Untuk filter berdasarkan metode
@@ -33,9 +34,24 @@ class _LaporanPageState extends State<LaporanPage> {
   @override
   void initState() {
     super.initState();
-    // Ambil ID dari argumen navigasi (yang dikirim dari HomePage atau AdminAgenDashboard)
-    // Jika tidak ada argumen, fallback ke ID user saat ini (untuk Kasir)
+    _loadUserRole();
     _adminAgenId = widget.userId ?? FirebaseAuth.instance.currentUser?.uid;
+  }
+
+  Future<void> _loadUserRole() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final userDoc = await _firestore.collection('users').doc(user.uid).get();
+      if (userDoc.exists) {
+        setState(() {
+          _userRole = userDoc.data()?['role'] as String?;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading user role: $e');
+    }
   }
 
   Future<void> _exportToExcel(List<QueryDocumentSnapshot> transactions) async {
@@ -198,54 +214,81 @@ class _LaporanPageState extends State<LaporanPage> {
     );
   }
 
-  // ✅ DIPERBAIKI: Menggunakan _adminAgenId
   Future<void> _showMethodFilterDialog() async {
-    if (_adminAgenId == null) return;
-    final snapshot = await _firestore
-        .collection('transactions')
-        .where('uid_admin_agen', isEqualTo: _adminAgenId) // ✅ DIGANTI
-        .get();
+    final currentUser = FirebaseAuth.instance.currentUser;
 
-    // Ambil daftar unik metode pembayaran
-    final availableMethods = [
-      ...snapshot.docs
-          .map((doc) => (doc.data())['nama_payment_method'] as String?)
-          .where((item) => item != null) // Filter null
-          .toSet(), // Dapatkan nilai unik
-    ];
+    // ✅ Log: check user first
+    if (currentUser == null) {
+      print('❌ No user logged in.');
+      return;
+    }
+    print('👤 Current user UID: ${currentUser.uid}');
+    print('📡 Fetching transactions for this user...');
 
-    availableMethods.sort(); // Urutkan A-Z
+    try {
+      final snapshot = await _firestore
+          .collection('transactions')
+          .where('uid_user', isEqualTo: currentUser.uid)
+          .get();
 
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Pilih Metode'),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: availableMethods.length,
-              itemBuilder: (context, index) {
-                final method = availableMethods[index];
-                return ListTile(
-                  title: Text(method ?? 'Metode Tidak Dikenal'), // ✅ Perbaikan
-                  onTap: () {
-                    setState(() {
-                      _activeFilter = FilterType.byMethod;
-                      _selectedMethod = method;
-                      _selectedDateRange = null; // Reset filter lain
-                    });
-                    Navigator.of(context).pop();
-                  },
-                );
-              },
+      print('✅ Query executed successfully.');
+      print('📊 Transaction count: ${snapshot.docs.length}');
+
+      // Log first few docs to verify fields
+      for (var i = 0; i < snapshot.docs.length && i < 3; i++) {
+        final data = snapshot.docs[i].data();
+        print('🧾 Doc #$i: ${data}');
+      }
+
+      final availableMethods = [
+        ...snapshot.docs
+            .map((doc) => (doc.data())['nama_payment_method'] as String?)
+            .where((item) => item != null)
+            .toSet(),
+      ];
+
+      availableMethods.sort();
+
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: const Text('Pilih Metode'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: availableMethods.length,
+                itemBuilder: (context, index) {
+                  final method = availableMethods[index];
+                  return ListTile(
+                    title: Text(method ?? 'Metode Tidak Dikenal'),
+                    onTap: () {
+                      setState(() {
+                        _activeFilter = FilterType.byMethod;
+                        _selectedMethod = method;
+                        _selectedDateRange = null;
+                      });
+                      Navigator.of(context).pop();
+                    },
+                  );
+                },
+              ),
             ),
-          ),
-        );
-      },
-    );
+          );
+        },
+      );
+    } on FirebaseException catch (e) {
+      print('🔥 FIREBASE EXCEPTION ---');
+      print('Code: ${e.code}');
+      print('Message: ${e.message}');
+      print('Stack trace: ${e.stackTrace}');
+      print('--------------------------');
+    } catch (e, stack) {
+      print('❌ UNKNOWN ERROR: $e');
+      print(stack);
+    }
   }
 
   Future<void> _showDateRangePicker() async {
@@ -791,6 +834,20 @@ class _LaporanPageState extends State<LaporanPage> {
 
   @override
   Widget build(BuildContext context) {
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null) {
+      return const Center(child: Text('User tidak terautentikasi'));
+    }
+
+    // 🧩 TUNGGU hingga role selesai dimuat
+    if (_userRole == null) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    // ✅ Gunakan StreamBuilder hanya setelah role dimuat
     return Scaffold(
       appBar: AppBar(
         title: const Text('Laporan Transaksi'),
@@ -801,236 +858,196 @@ class _LaporanPageState extends State<LaporanPage> {
           ),
         ],
       ),
-      // ✅ DIPERBAIKI: Menggunakan _adminAgenId
-      body: _adminAgenId == null
-          ? const Center(child: CircularProgressIndicator())
-          : StreamBuilder<QuerySnapshot>(
-              stream: () {
-                // ✅ DIPERBAIKI: Query menggunakan uid_admin_agen
-                Query query = _firestore
-                    .collection('transactions')
-                    .where('uid_admin_agen', isEqualTo: _adminAgenId);
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: (() {
+          Query<Map<String, dynamic>> query =
+              _firestore.collection('transactions');
 
-                // Menerapkan filter secara dinamis ke query Firestore
-                switch (_activeFilter) {
-                  case FilterType.byMethod:
-                    if (_selectedMethod != null) {
-                      query = query.where(
-                        'nama_payment_method',
-                        isEqualTo: _selectedMethod,
-                      );
-                    }
-                    break;
-                  case FilterType.byDateRange:
-                    if (_selectedDateRange != null) {
-                      // Ambil awal hari untuk tanggal mulai
-                      DateTime startDate = DateTime(
-                        _selectedDateRange!.start.year,
-                        _selectedDateRange!.start.month,
-                        _selectedDateRange!.start.day,
-                      );
-                      // Ambil akhir hari untuk tanggal selesai
-                      DateTime endDate = DateTime(
-                        _selectedDateRange!.end.year,
-                        _selectedDateRange!.end.month,
-                        _selectedDateRange!.end.day,
-                        23,
-                        59,
-                        59,
-                      );
+          // 🧩 Tentukan query sesuai role
+          if (_userRole == 'kasir') {
+            query = query.where('uid_user', isEqualTo: currentUser.uid);
+          } else if (_userRole == 'admin_agen') {
+            query = query.where('uid_admin_agen', isEqualTo: currentUser.uid);
+          }
 
-                      query = query
-                          .where(
-                            'timestamp',
-                            isGreaterThanOrEqualTo: startDate,
-                          )
-                          .where(
-                            'timestamp',
-                            isLessThanOrEqualTo: endDate,
-                          );
-                    }
-                    break;
-                  case FilterType.none:
-                    break;
-                }
+          // 🧭 Tambahkan filter jika ada
+          if (_selectedMethod != null && _selectedMethod!.isNotEmpty) {
+            query =
+                query.where('nama_payment_method', isEqualTo: _selectedMethod);
+          }
 
-                return query.orderBy('timestamp', descending: true).snapshots();
-              }(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snapshot.hasError) {
-                  print("--- ERROR DARI FIREBASE ---");
-                  print(snapshot.error);
-                  print("---------------------------");
-                  return Center(
-                    child: Text('Gagal memuat data: ${snapshot.error}'),
-                  );
-                }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return const Center(
-                    child: Text(
-                      'Tidak ada transaksi yang cocok dengan filter.',
-                    ),
-                  );
-                }
+          if (_selectedDateRange != null) {
+            final start = DateTime(
+              _selectedDateRange!.start.year,
+              _selectedDateRange!.start.month,
+              _selectedDateRange!.start.day,
+            );
+            final end = DateTime(
+              _selectedDateRange!.end.year,
+              _selectedDateRange!.end.month,
+              _selectedDateRange!.end.day,
+              23,
+              59,
+              59,
+            );
 
-                final transactions = snapshot.data!.docs;
+            query = query
+                .where('timestamp', isGreaterThanOrEqualTo: start)
+                .where('timestamp', isLessThanOrEqualTo: end);
+          }
 
-                return Column(
+          debugPrint('🔥 Query for role: $_userRole');
+          debugPrint('🪪 Using UID: ${currentUser.uid}');
+
+          return query.orderBy('timestamp', descending: true).snapshots();
+        })(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (snapshot.hasError) {
+            debugPrint('🔥 FIRESTORE ERROR: ${snapshot.error}');
+            return Center(child: Text('Gagal memuat data: ${snapshot.error}'));
+          }
+
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(
+                child: Text('Tidak ada transaksi yang cocok dengan filter.'));
+          }
+
+          final transactions = snapshot.data!.docs;
+
+          return Column(
+            children: [
+              // 🔽 Tombol export
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Row(
                   children: [
-                    Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              icon: _isProcessing
-                                  ? Container(
-                                      width: 20,
-                                      height: 20,
-                                      padding: const EdgeInsets.all(2.0),
-                                      child: const CircularProgressIndicator(
-                                        color: Colors.white,
-                                        strokeWidth: 2.5,
-                                      ),
-                                    )
-                                  : const Icon(
-                                      Icons.grid_on), // Icon untuk Excel
-                              label: Text(
-                                _isProcessing ? 'MEMPROSES...' : 'Export Excel',
-                              ),
-                              onPressed: _isProcessing
-                                  ? null
-                                  : () => _exportToExcel(transactions),
-                              style: ElevatedButton.styleFrom(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 12),
-                                backgroundColor:
-                                    _isProcessing ? Colors.grey : Colors.green,
-                                foregroundColor: Colors.white,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              icon: _isProcessing
-                                  ? Container(
-                                      width: 20,
-                                      height: 20,
-                                      padding: const EdgeInsets.all(2.0),
-                                      child: const CircularProgressIndicator(
-                                        color: Colors.white,
-                                        strokeWidth: 2.5,
-                                      ),
-                                    )
-                                  : const Icon(
-                                      Icons.picture_as_pdf), // Icon untuk PDF
-                              label: Text(
-                                _isProcessing ? 'MEMPROSES...' : 'Export PDF',
-                              ),
-                              onPressed: _isProcessing
-                                  ? null
-                                  : () => _exportToPdf(transactions),
-                              style: ElevatedButton.styleFrom(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 12),
-                                backgroundColor: _isProcessing
-                                    ? Colors.grey
-                                    : Colors.red, // Warna merah untuk PDF
-                                foregroundColor: Colors.white,
-                              ),
-                            ),
-                          ),
-                        ],
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        icon: _isProcessing
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2.5,
+                                ),
+                              )
+                            : const Icon(Icons.grid_on),
+                        label: Text(
+                            _isProcessing ? 'MEMPROSES...' : 'Export Excel'),
+                        onPressed: _isProcessing
+                            ? null
+                            : () => _exportToExcel(transactions),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                        ),
                       ),
                     ),
+                    const SizedBox(width: 10),
                     Expanded(
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: DataTable(
-                          columns: const [
-                            DataColumn(
-                              label: Text(
-                                'Tanggal',
-                                style: TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                            DataColumn(
-                              label: Text(
-                                'Metode',
-                                style: TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                            DataColumn(
-                              label: Text(
-                                'Aksi',
-                                style: TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                          ],
-                          rows: transactions.map((doc) {
-                            final data = doc.data() as Map<String, dynamic>;
-                            final timestamp =
-                                (data['timestamp'] as Timestamp?)?.toDate();
-                            final formattedDate = timestamp != null
-                                ? DateFormat('dd/MM/yy HH:mm').format(timestamp)
-                                : 'N/A';
-                            return DataRow(
-                              cells: [
-                                DataCell(Text(formattedDate)),
-                                DataCell(
-                                  Text(data['nama_transaction_method'] ?? ''),
+                      child: ElevatedButton.icon(
+                        icon: _isProcessing
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2.5,
                                 ),
-                                DataCell(
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.visibility,
-                                          color: Colors.teal,
-                                          size: 20,
-                                        ),
-                                        tooltip: 'Lihat Detail',
-                                        onPressed: () =>
-                                            _showTransactionDetailDialog(doc),
-                                      ),
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.edit,
-                                          color: Colors.blue,
-                                          size: 20,
-                                        ),
-                                        onPressed: () {
-                                          _showEditTransactionDialog(doc);
-                                        },
-                                      ),
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.delete,
-                                          color: Colors.red,
-                                          size: 20,
-                                        ),
-                                        onPressed: () {
-                                          _deleteTransaction(doc);
-                                        },
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            );
-                          }).toList(),
+                              )
+                            : const Icon(Icons.picture_as_pdf),
+                        label:
+                            Text(_isProcessing ? 'MEMPROSES...' : 'Export PDF'),
+                        onPressed: _isProcessing
+                            ? null
+                            : () => _exportToPdf(transactions),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.redAccent,
+                          foregroundColor: Colors.white,
                         ),
                       ),
                     ),
                   ],
-                );
-              },
-            ),
+                ),
+              ),
+
+              // 🔽 Daftar transaksi
+              Expanded(
+                child: ListView.builder(
+                  itemCount: transactions.length,
+                  itemBuilder: (context, index) {
+                    final doc = transactions[index];
+                    final data = doc.data();
+                    final timestamp =
+                        (data['timestamp'] as Timestamp?)?.toDate();
+                    final formattedDate = timestamp != null
+                        ? DateFormat('dd/MM/yyyy HH:mm').format(timestamp)
+                        : 'N/A';
+
+                    return Card(
+                      margin: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      child: ListTile(
+                        title: Text(
+                          data['nama_payment_method'] ?? 'Metode Tidak Dikenal',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Tanggal: $formattedDate'),
+                            Text('Rekening: ${data['nama_rekening'] ?? '-'}'),
+                            Text(
+                              'Profit: Rp ${_currencyFormatter.format(data['uang_profit'] ?? 0)}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green,
+                              ),
+                            ),
+                          ],
+                        ),
+                        trailing: PopupMenuButton<String>(
+                          onSelected: (value) {
+                            if (value == 'detail') {
+                              _showTransactionDetailDialog(doc);
+                            } else if (value == 'edit') {
+                              _showEditTransactionDialog(doc);
+                            } else if (value == 'delete') {
+                              _deleteTransaction(doc);
+                            }
+                          },
+                          itemBuilder: (context) => const [
+                            PopupMenuItem(
+                              value: 'detail',
+                              child: Text('Lihat Detail'),
+                            ),
+                            PopupMenuItem(
+                              value: 'edit',
+                              child: Text('Edit'),
+                            ),
+                            PopupMenuItem(
+                              value: 'delete',
+                              child: Text(
+                                'Hapus',
+                                style: TextStyle(color: Colors.red),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 }
