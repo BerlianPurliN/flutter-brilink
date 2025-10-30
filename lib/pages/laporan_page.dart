@@ -1,4 +1,3 @@
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:excel/excel.dart';
 import 'package:file_saver/file_saver.dart';
@@ -13,7 +12,7 @@ import 'package:pdf/widgets.dart' as pw;
 enum FilterType { none, byMethod, byDateRange }
 
 class LaporanPage extends StatefulWidget {
-  final String? userId;
+  final String? userId; // Ini akan menerima _adminAgenId dari navigasi
   const LaporanPage({super.key, this.userId});
 
   @override
@@ -25,7 +24,7 @@ class _LaporanPageState extends State<LaporanPage> {
   final NumberFormat _currencyFormatter = NumberFormat.decimalPattern('id_ID');
   bool _isProcessing = false;
   String? _selectedFilterMethod;
-  String? _userId;
+  String? _adminAgenId; // Mengganti nama _userId
 
   FilterType _activeFilter = FilterType.none;
   String? _selectedMethod; // Untuk filter berdasarkan metode
@@ -34,7 +33,9 @@ class _LaporanPageState extends State<LaporanPage> {
   @override
   void initState() {
     super.initState();
-    _userId = widget.userId ?? FirebaseAuth.instance.currentUser?.uid;
+    // Ambil ID dari argumen navigasi (yang dikirim dari HomePage atau AdminAgenDashboard)
+    // Jika tidak ada argumen, fallback ke ID user saat ini (untuk Kasir)
+    _adminAgenId = widget.userId ?? FirebaseAuth.instance.currentUser?.uid;
   }
 
   Future<void> _exportToExcel(List<QueryDocumentSnapshot> transactions) async {
@@ -92,7 +93,7 @@ class _LaporanPageState extends State<LaporanPage> {
           TextCellValue(
               'Rp ${_currencyFormatter.format((data['harga_jual_admin'] as num?)?.toInt() ?? 0)}'),
           TextCellValue(
-              'Rp ${_currencyFormatter.format((data['biaya_admin'] as num?)?.toInt() ?? 0)}'),
+              'Rp ${_currencyFormatter.format((data['biaya_admin_fee'] as num?)?.toInt() ?? 0)}'), // Ganti nama field
           TextCellValue(
               'Rp ${_currencyFormatter.format((data['uang_profit'] as num?)?.toInt() ?? 0)}'),
         ]);
@@ -117,7 +118,7 @@ class _LaporanPageState extends State<LaporanPage> {
 
       // 4. Langsung buka file setelah berhasil disimpan
       await OpenFilex.open(savedPath);
-    
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -197,18 +198,23 @@ class _LaporanPageState extends State<LaporanPage> {
     );
   }
 
+  // ✅ DIPERBAIKI: Menggunakan _adminAgenId
   Future<void> _showMethodFilterDialog() async {
-    if (_userId == null) return;
+    if (_adminAgenId == null) return;
     final snapshot = await _firestore
         .collection('transactions')
-        .where('uid_user', isEqualTo: _userId)
+        .where('uid_admin_agen', isEqualTo: _adminAgenId) // ✅ DIGANTI
         .get();
+
+    // Ambil daftar unik metode pembayaran
     final availableMethods = [
       ...snapshot.docs
-          .map((doc) => (doc.data())['nama_payment_method'] as String)
-          .toSet()
-          ,
+          .map((doc) => (doc.data())['nama_payment_method'] as String?)
+          .where((item) => item != null) // Filter null
+          .toSet(), // Dapatkan nilai unik
     ];
+
+    availableMethods.sort(); // Urutkan A-Z
 
     if (!mounted) return;
     showDialog(
@@ -224,7 +230,7 @@ class _LaporanPageState extends State<LaporanPage> {
               itemBuilder: (context, index) {
                 final method = availableMethods[index];
                 return ListTile(
-                  title: Text(method),
+                  title: Text(method ?? 'Metode Tidak Dikenal'), // ✅ Perbaikan
                   onTap: () {
                     setState(() {
                       _activeFilter = FilterType.byMethod;
@@ -259,50 +265,27 @@ class _LaporanPageState extends State<LaporanPage> {
     }
   }
 
-  void _showFilterDialog(List<String> availableMethods) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Filter Berdasarkan Metode'),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: availableMethods.length,
-              itemBuilder: (context, index) {
-                final method = availableMethods[index];
-                return ListTile(
-                  title: Text(method),
-                  onTap: () {
-                    setState(() {
-                      if (method == 'Semua') {
-                        _selectedFilterMethod = null; // Hapus filter
-                      } else {
-                        _selectedFilterMethod = method; // Terapkan filter
-                      }
-                    });
-                    Navigator.of(context).pop(); // Tutup dialog
-                  },
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
+  // Fungsi ini sepertinya tidak terpakai, bisa dihapus
+  // void _showFilterDialog(List<String> availableMethods) { ... }
 
+  // ✅ DIPERBAIKI: Menggunakan _adminAgenId
   Future<void> _deleteTransaction(DocumentSnapshot doc) async {
     final data = doc.data() as Map<String, dynamic>;
-    final hargaBeli = (data['harga_beli'] as num?)?.toInt() ?? 0;
-    final rekeningId = data['uid_rekening'] as String?;
 
-    if (rekeningId == null) {
+    // Ambil data yang relevan dari transaksi
+    final hargaBeli = (data['harga_beli'] as num?)?.toInt() ?? 0;
+    final uangBersih = (data['uang_bersih'] as num?)?.toInt() ?? 0;
+    final uangKotor = (data['uang_kotor'] as num?)?.toInt() ?? 0;
+    final transactionMethod = data['nama_transaction_method'] as String?;
+
+    final rekeningId = data['uid_rekening'] as String?;
+    final cashId = data['uid_cash'] as String?;
+
+    if (rekeningId == null || cashId == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Error: Missing rekening ID in transaction.'),
+            content: Text('Error: ID rekening/kas hilang di transaksi.'),
             backgroundColor: Colors.red,
           ),
         );
@@ -310,13 +293,12 @@ class _LaporanPageState extends State<LaporanPage> {
       return;
     }
 
-    // Tampilkan dialog konfirmasi terlebih dahulu
     final bool? confirm = await showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Konfirmasi Hapus'),
         content: const Text(
-          'Anda yakin ingin menghapus transaksi ini? Saldo rekening akan dikembalikan.',
+          'Anda yakin ingin menghapus transaksi ini? Saldo akan dikembalikan.',
         ),
         actions: [
           TextButton(
@@ -336,16 +318,47 @@ class _LaporanPageState extends State<LaporanPage> {
       try {
         final rekeningRef = _firestore
             .collection('users')
-            .doc(_userId)
+            .doc(_adminAgenId) // ✅ DIGANTI
             .collection('rekening')
             .doc(rekeningId);
 
+        final cashRef = _firestore
+            .collection('users')
+            .doc(_adminAgenId) // ✅ DIGANTI
+            .collection('cash')
+            .doc(cashId);
+
         WriteBatch batch = _firestore.batch();
 
-        // Operasi 1: Kembalikan saldo sebesar harga_beli ke rekening
-        batch.update(rekeningRef, {'saldo': FieldValue.increment(hargaBeli)});
+        // Logika pembalikan saldo
+        if (transactionMethod == 'Tarik Tunai') {
+          // Kembalikan uang ke Kas Tunai
+          batch.update(cashRef, {'saldo': FieldValue.increment(hargaBeli)});
+          // Kurangi uang dari Rekening
+          batch.update(
+              rekeningRef, {'saldo': FieldValue.increment(-uangBersih)});
+        } else {
+          // Skenario 2: Metode Lain (misal: Setor Tunai, Transfer) saat DELETE
+          print("DEBUG: Membalikkan logika Setor Tunai/Transfer");
 
-        // Operasi 2: Hapus dokumen transaksi
+          // Kembalikan uang ke Rekening (Jumlah + Fee)
+          final int fee = (data['biaya_admin_fee'] as num?)?.toInt() ?? 0;
+          // Pastikan hargaBeli adalah non-nullable int
+          final int hargaBeliInt = (data['harga_beli'] as num?)?.toInt() ?? 0;
+          final int totalPengeluaranRekening = hargaBeliInt + fee;
+          batch.update(rekeningRef,
+              {'saldo': FieldValue.increment(totalPengeluaranRekening)});
+
+          // Kurangi uang dari Kas Tunai (Jumlah + Biaya Admin Pelanggan)
+          final int hargaJualAdmin =
+              (data['harga_jual_admin'] as num?)?.toInt() ?? 0;
+          final int uangKotorToDelete =
+              hargaBeliInt + hargaJualAdmin; // Hitung uangKotor di sini
+          batch.update(
+              cashRef, {'saldo': FieldValue.increment(-uangKotorToDelete)});
+        }
+
+        // Hapus dokumen transaksi
         batch.delete(doc.reference);
 
         await batch.commit();
@@ -371,6 +384,7 @@ class _LaporanPageState extends State<LaporanPage> {
     }
   }
 
+  // ✅ DIPERBAIKI: Menggunakan _adminAgenId
   void _showEditTransactionDialog(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
 
@@ -398,6 +412,9 @@ class _LaporanPageState extends State<LaporanPage> {
                 controller: hargaBeliController,
                 decoration: const InputDecoration(labelText: 'Harga Beli'),
                 keyboardType: TextInputType.number,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly
+                ], // Perlu Currency Formatter
               ),
               TextField(
                 controller: hargaJualController,
@@ -405,6 +422,9 @@ class _LaporanPageState extends State<LaporanPage> {
                   labelText: 'Biaya Admin Dalam',
                 ),
                 keyboardType: TextInputType.number,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly
+                ], // Perlu Currency Formatter
               ),
             ],
           ),
@@ -415,52 +435,80 @@ class _LaporanPageState extends State<LaporanPage> {
             ),
             ElevatedButton(
               onPressed: () async {
-                final int oldHargaBeli = (data['harga_beli'] as num?)?.toInt() ?? 0;
+                final int oldHargaBeli =
+                    (data['harga_beli'] as num?)?.toInt() ?? 0;
+
                 final int? newHargaBeli = int.tryParse(
-                  hargaBeliController.text,
+                  hargaBeliController.text
+                      .replaceAll(RegExp(r'[^\d]'), ''), // Hapus format
                 );
                 final int? newHargaJual = int.tryParse(
-                  hargaJualController.text,
+                  hargaJualController.text
+                      .replaceAll(RegExp(r'[^\d]'), ''), // Hapus format
                 );
 
+                // ✅ Blok if untuk null safety
                 if (newHargaBeli != null && newHargaJual != null) {
-                  // Hitung ulang uang bersih
-                  final int biayaAdmin = (data['biaya_admin'] as num?)?.toInt() ?? 0;
-                  final int newUangBersih =
-                      (newHargaJual - biayaAdmin) - newHargaBeli;
+                  // --- PINDAHKAN SEMUA PERHITUNGAN KE SINI ---
+                  final int biayaAdminFee =
+                      (data['biaya_admin_fee'] as num?)?.toInt() ?? 0;
+                  final String transactionMethod =
+                      data['nama_transaction_method'];
 
-                  // Hitung selisih untuk penyesuaian saldo
-                  final int deltaSaldo = oldHargaBeli - newHargaBeli;
+                  final int newUangProfit = newHargaJual - biayaAdminFee;
+                  final int newUangKotor = newHargaBeli + newHargaJual;
+                  final int newUangBersih = newHargaBeli + newUangProfit;
+
+                  // Perhitungan delta sekarang aman karena new... bukan null
+                  final int deltaHargaBeli = newHargaBeli - oldHargaBeli;
+                  final int deltaUangBersih = newUangBersih -
+                      ((data['uang_bersih'] as num?)?.toInt() ?? 0);
+                  final int deltaUangKotor = newUangKotor -
+                      ((data['uang_kotor'] as num?)?.toInt() ?? 0);
+                  // --- AKHIR DARI PERHITUNGAN ---
 
                   try {
                     final rekeningId = data['uid_rekening'] as String?;
-                    if (rekeningId == null) {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Error: Missing rekening ID.')),
-                        );
-                      }
-                      return;
+                    final cashId = data['uid_cash'] as String?;
+                    if (rekeningId == null || cashId == null) {
+                      throw Exception("ID rekening atau kas hilang");
                     }
+
                     final rekeningRef = _firestore
                         .collection('users')
-                        .doc(_userId)
+                        .doc(_adminAgenId)
                         .collection('rekening')
                         .doc(rekeningId);
 
+                    final cashRef = _firestore
+                        .collection('users')
+                        .doc(_adminAgenId)
+                        .collection('cash')
+                        .doc(cashId);
+
                     WriteBatch batch = _firestore.batch();
 
-                    // Operasi 1: Update dokumen transaksi dengan nilai baru
+                    // Operasi 1: Update transaksi
                     batch.update(doc.reference, {
                       'harga_beli': newHargaBeli,
                       'harga_jual_admin': newHargaJual,
+                      'uang_profit': newUangProfit,
+                      'uang_kotor': newUangKotor,
                       'uang_bersih': newUangBersih,
                     });
 
-                    // Operasi 2: Sesuaikan saldo rekening dengan selisihnya
-                    batch.update(rekeningRef, {
-                      'saldo': FieldValue.increment(deltaSaldo),
-                    });
+                    // Operasi 2: Sesuaikan saldo
+                    if (transactionMethod == 'Tarik Tunai') {
+                      batch.update(cashRef,
+                          {'saldo': FieldValue.increment(-deltaHargaBeli)});
+                      batch.update(rekeningRef,
+                          {'saldo': FieldValue.increment(deltaUangBersih)});
+                    } else {
+                      batch.update(rekeningRef,
+                          {'saldo': FieldValue.increment(-deltaHargaBeli)});
+                      batch.update(cashRef,
+                          {'saldo': FieldValue.increment(deltaUangKotor)});
+                    }
 
                     await batch.commit();
 
@@ -472,6 +520,13 @@ class _LaporanPageState extends State<LaporanPage> {
                       );
                     }
                   }
+                } else {
+                  // Jika input tidak valid (bukan angka)
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                        content:
+                            Text('Input tidak valid. Harap masukkan angka.')),
+                  );
                 }
               },
               child: const Text('Simpan'),
@@ -527,7 +582,7 @@ class _LaporanPageState extends State<LaporanPage> {
                 ),
                 _buildDetailRow(
                   'Biaya Admin',
-                  'Rp ${_currencyFormatter.format(data['biaya_admin'] ?? 0)}',
+                  'Rp ${_currencyFormatter.format(data['biaya_admin_fee'] ?? 0)}', // Ganti nama field
                 ),
                 const Divider(height: 20),
                 _buildDetailRow(
@@ -603,7 +658,7 @@ class _LaporanPageState extends State<LaporanPage> {
         final hargaJual =
             'Rp ${_currencyFormatter.format(d['harga_jual_admin'] ?? 0)}';
         final biayaAdmin =
-            'Rp ${_currencyFormatter.format(d['biaya_admin'] ?? 0)}';
+            'Rp ${_currencyFormatter.format(d['biaya_admin_fee'] ?? 0)}'; // Ganti nama field
         final profit = 'Rp ${_currencyFormatter.format(d['uang_profit'] ?? 0)}';
         return [
           date,
@@ -683,7 +738,7 @@ class _LaporanPageState extends State<LaporanPage> {
 
       // ✅ Langsung buka file setelah tersimpan
       await OpenFilex.open(savedPath);
-    
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -746,13 +801,15 @@ class _LaporanPageState extends State<LaporanPage> {
           ),
         ],
       ),
-      body: _userId == null
+      // ✅ DIPERBAIKI: Menggunakan _adminAgenId
+      body: _adminAgenId == null
           ? const Center(child: CircularProgressIndicator())
           : StreamBuilder<QuerySnapshot>(
               stream: () {
+                // ✅ DIPERBAIKI: Query menggunakan uid_admin_agen
                 Query query = _firestore
                     .collection('transactions')
-                    .where('uid_user', isEqualTo: _userId);
+                    .where('uid_admin_agen', isEqualTo: _adminAgenId);
 
                 // Menerapkan filter secara dinamis ke query Firestore
                 switch (_activeFilter) {
@@ -766,16 +823,30 @@ class _LaporanPageState extends State<LaporanPage> {
                     break;
                   case FilterType.byDateRange:
                     if (_selectedDateRange != null) {
+                      // Ambil awal hari untuk tanggal mulai
+                      DateTime startDate = DateTime(
+                        _selectedDateRange!.start.year,
+                        _selectedDateRange!.start.month,
+                        _selectedDateRange!.start.day,
+                      );
+                      // Ambil akhir hari untuk tanggal selesai
+                      DateTime endDate = DateTime(
+                        _selectedDateRange!.end.year,
+                        _selectedDateRange!.end.month,
+                        _selectedDateRange!.end.day,
+                        23,
+                        59,
+                        59,
+                      );
+
                       query = query
                           .where(
                             'timestamp',
-                            isGreaterThanOrEqualTo: _selectedDateRange!.start,
+                            isGreaterThanOrEqualTo: startDate,
                           )
                           .where(
                             'timestamp',
-                            isLessThanOrEqualTo: _selectedDateRange!.end.add(
-                              const Duration(days: 1),
-                            ),
+                            isLessThanOrEqualTo: endDate,
                           );
                     }
                     break;
@@ -811,10 +882,8 @@ class _LaporanPageState extends State<LaporanPage> {
                   children: [
                     Padding(
                       padding: const EdgeInsets.all(16.0),
-                      // 1. Ganti SizedBox dengan Row untuk menampung dua tombol
                       child: Row(
                         children: [
-                          // 2. Tombol Export Excel (gunakan Expanded agar lebarnya fleksibel)
                           Expanded(
                             child: ElevatedButton.icon(
                               icon: _isProcessing
@@ -844,11 +913,7 @@ class _LaporanPageState extends State<LaporanPage> {
                               ),
                             ),
                           ),
-
-                          // 3. Tambahkan Spasi di antara tombol
                           const SizedBox(width: 16),
-
-                          // 4. Tombol Export PDF BARU (gunakan Expanded juga)
                           Expanded(
                             child: ElevatedButton.icon(
                               icon: _isProcessing

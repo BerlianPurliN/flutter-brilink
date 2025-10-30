@@ -3,57 +3,70 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // --- Helper Function ---
-    // Fungsi ini memeriksa role dari user yang sedang login (yang membuat request)
     function isRole(roleName) {
-      // Perintah 'get' ini harus diotorisasi oleh aturan 'read' di bawah
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == roleName;
+      return request.auth != null &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == roleName;
     }
 
-    // ---------------- Users collection ----------------
+// ---------------- Users collection ----------------
     match /users/{userId} {
 
-      // --- ATURAN READ (DIPERBAIKI) ---
-      
-      // 1. Izinkan user manapun untuk membaca DOKUMEN MEREKA SENDIRI.
-      //    Ini adalah aturan terpenting agar fungsi isRole() bisa bekerja.
-      allow read: if request.auth.uid == userId;
+      // --- READ ---
+      allow get: if request.auth != null && request.auth.uid == userId; // Allow self-get
+      allow list: if request.auth != null && request.query.resource.data.uid == request.auth.uid; // Allow self-list-by-uid
 
-      // 2. Izinkan 'super_admin' untuk membaca SEMUA dokumen user lain.
-      //    Ini yang mengizinkan query dropdown 'Select Admin Agen' bekerja.
-      allow read: if isRole('super_admin');
+      allow get, list: if isRole('super_admin'); // Super admin full read
 
-      // 3. Izinkan 'admin_agen' untuk membaca 'kasir' yang mereka kelola.
-      allow read: if (isRole('admin_agen') && resource.data.managed_by == request.auth.uid);
+      // Allow Admin Agen to GET Kasir they manage (reading one Kasir doc directly)
+      allow get: if isRole('admin_agen')
+                  && resource.data.role == 'kasir'
+                  && resource.data.managed_by == request.auth.uid;
+
+      // ✅ --- ADD THIS RULE ---
+      // Allow Admin Agen to LIST users WHERE 'managed_by' matches their UID
+      allow list: if isRole('admin_agen')
+                   && request.query.filters.size() == 1          // Check exactly one filter
+                   && request.query.filters[0].field == 'managed_by' // Check filter field
+                   && request.query.filters[0].value == request.auth.uid; // Check filter value
+      // ✅ --- END OF ADDED RULE ---
 
 
-      // --- ATURAN WRITE ---
-
-      // 1. Izinkan user mengupdate dokumennya sendiri.
-      allow update: if request.auth.uid == userId;
-
-      // 2. Izinkan 'super_admin' untuk membuat, mengupdate, atau menghapus user manapun.
-      //    (Ini mengizinkan Anda membuat kasir DAN mengupdate array di admin_agen).
-      allow create, update, delete: if isRole('super_admin');
+      // --- WRITES --- (Keep as before)
+      allow create: if isRole('super_admin');
+      allow update: if request.auth != null && request.auth.uid == userId && !('role' in request.resource.data) && !('managed_by' in request.resource.data) && !('managed_kasir_ids' in request.resource.data);
+      allow update: if isRole('super_admin');
+      allow delete: if isRole('super_admin');
     }
+    // (Keep the rest of your rules for transactions and subcollections the same)
 
     // ---------------- Transactions collection ----------------
     match /transactions/{transactionId} {
       
-      // Super Admin full access
+      // Kasir bisa membuat transaksinya sendiri
+      allow create: if isRole('kasir') && request.resource.data.uid_user == request.auth.uid;
+      
+      // Kasir bisa membaca transaksinya sendiri
+      allow read: if isRole('kasir') && resource.data.uid_user == request.auth.uid;
+
+      // Admin Agen bisa membaca transaksi milik Kasir yang dia kelola
+      allow read: if isRole('admin_agen') 
+                  // Anda harus menambahkan 'uid_admin_agen' ke transactionData
+                  && resource.data.uid_admin_agen == request.auth.uid; 
+      
+      // Super Admin bisa membaca/menulis semua
       allow read, write: if isRole('super_admin');
-
-      // Admin Agen can read transactions of their managed kasir
-      allow read: if isRole('admin_agen')
-                  && resource.data.uid_user in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.managed_kasir_ids;
-
-      // Kasir can read/write only their own transactions
-      allow read, write: if request.auth.uid == resource.data.uid_user;
     }
 
-    // ---------------- Subcollections under users ----------------
+    // ---------------- Subcollections (rekening, cash, dll) ----------------
+    // {userId} di sini adalah ID Kasir
     match /users/{userId}/{subcollection}/{docId} {
-      allow read, write: if request.auth.uid == userId
-                         || isRole('super_admin');
+
+      // Izinkan user (Kasir) untuk R/W/D penuh pada subcollection-nya sendiri
+      allow read, write, create, delete: if request.auth != null && request.auth.uid == userId;
+
+      // Super Admin bisa R/W/D penuh
+      allow read, write, create, delete: if isRole('super_admin');
     }
   }
 }

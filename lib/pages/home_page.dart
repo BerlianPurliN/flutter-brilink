@@ -8,7 +8,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
-// --- MODEL CLASS ---
+// --- MODEL CLASS (Tidak Berubah) ---
 
 class PaymentMethod extends Equatable {
   final String id;
@@ -83,18 +83,24 @@ class CurrencyInputFormatter extends TextInputFormatter {
   @override
   TextEditingValue formatEditUpdate(
       TextEditingValue oldValue, TextEditingValue newValue) {
-    if (newValue.text.isEmpty) {
+    // Hapus karakter non-digit
+    String digitsOnly = newValue.text.replaceAll(RegExp(r'[^\d]'), '');
+    if (digitsOnly.isEmpty) {
       return newValue.copyWith(text: '');
     }
 
-    final int value = int.parse(newValue.text);
-    final formatter = NumberFormat.decimalPattern('id_ID');
-    final String newText = formatter.format(value);
+    try {
+      final int value = int.parse(digitsOnly);
+      final formatter = NumberFormat.decimalPattern('id_ID');
+      final String newText = formatter.format(value);
 
-    return newValue.copyWith(
-      text: newText,
-      selection: TextSelection.collapsed(offset: newText.length),
-    );
+      return newValue.copyWith(
+        text: newText,
+        selection: TextSelection.collapsed(offset: newText.length),
+      );
+    } catch (e) {
+      return oldValue; // Jika gagal parsing, kembali ke nilai lama
+    }
   }
 }
 
@@ -127,50 +133,29 @@ class _HomePageState extends State<HomePage> {
   final AuthService _authService = AuthService();
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final User? _currentUser = FirebaseAuth.instance.currentUser;
+
+  // Data statis
   final List<String> _staticTransactionMethods = [
     'Tarik Tunai',
   ];
 
+  // Variabel untuk menyimpan ID Admin Agen (untuk laporan)
+  String? _adminAgenId;
+  String? _kasirName;
+
+  // State Form
   String? _selectedTransactionMethod;
-
   Cash? _selectedCashAccount;
-
+  PaymentMethod? _selectedPaymentMethod;
+  Rekening? _selectedRekening;
   Future<List<String>>? _combinedMethodsFuture;
 
   // Form Controllers
   final _hargaBeliController = TextEditingController();
   final _biayaAdminDalamController = TextEditingController();
 
-  // State Variables for Dropdowns
-  PaymentMethod? _selectedPaymentMethod;
-  Rekening? _selectedRekening;
-
   // State variable for loading indicator
   bool _isSubmitting = false;
-
-  Future<List<String>> _getCombinedTransactionMethods() async {
-    if (_currentUser == null) return _staticTransactionMethods;
-
-    try {
-      final snapshot = await _firestore
-          .collection('users')
-          .doc(_currentUser!.uid)
-          .collection('transaction_methods')
-          .get();
-
-      final dynamicMethods = snapshot.docs
-          .map((doc) => doc['metode_transaction'] as String)
-          .toList();
-
-      final combinedSet = {..._staticTransactionMethods, ...dynamicMethods};
-
-      return combinedSet.toList();
-    } catch (e) {
-      print("Gagal mengambil metode transaksi dinamis: $e");
-
-      return _staticTransactionMethods;
-    }
-  }
 
   // Formatter for currency
   final NumberFormat _currencyFormatter = NumberFormat.currency(
@@ -179,10 +164,68 @@ class _HomePageState extends State<HomePage> {
     decimalDigits: 0,
   );
 
+  @override
+  void initState() {
+    super.initState();
+    // Set default transaction method
+    _selectedTransactionMethod = _staticTransactionMethods.isNotEmpty
+        ? _staticTransactionMethods[0]
+        : null;
+    // Muat data dinamis
+    _combinedMethodsFuture = _getCombinedTransactionMethods();
+    // Ambil data user (termasuk admin_agen_id)
+    _fetchUserData();
+  }
+
+  // Fungsi untuk mengambil data user (Kasir)
+  Future<void> _fetchUserData() async {
+    if (_currentUser == null) return;
+    try {
+      final userDoc =
+          await _firestore.collection('users').doc(_currentUser!.uid).get();
+      if (userDoc.exists) {
+        final data = userDoc.data() as Map<String, dynamic>;
+        setState(() {
+          _kasirName = data['name'] ?? data['email'];
+          _adminAgenId =
+              data['managed_by']; // Simpan ID Admin Agen untuk laporan
+        });
+      }
+    } catch (e) {
+      print("Gagal mengambil data user: $e");
+    }
+  }
+
+  // Semua fungsi query data sekarang menggunakan _currentUser!.uid
+  // Ini menyelesaikan masalah "Hanya Tarik Tunai" (jika data Kasir diisi)
+
+  Future<List<String>> _getCombinedTransactionMethods() async {
+    if (_currentUser == null) return _staticTransactionMethods;
+
+    try {
+      final snapshot = await _firestore
+          .collection('users')
+          .doc(_currentUser!.uid) // 👈 Milik Kasir
+          .collection('transaction_methods')
+          .get();
+
+      final dynamicMethods = snapshot.docs
+          .map((doc) => doc.data()['metode_transaction'] as String)
+          .toList();
+
+      final combinedSet = {..._staticTransactionMethods, ...dynamicMethods};
+      return combinedSet.toList();
+    } catch (e) {
+      print("Gagal mengambil metode transaksi dinamis: $e");
+      return _staticTransactionMethods;
+    }
+  }
+
   Stream<QuerySnapshot> _getRekeningStream() {
+    if (_currentUser == null) return const Stream.empty();
     return _firestore
         .collection('users')
-        .doc(_currentUser!.uid)
+        .doc(_currentUser!.uid) // 👈 Milik Kasir
         .collection('rekening')
         .snapshots();
   }
@@ -191,7 +234,7 @@ class _HomePageState extends State<HomePage> {
     if (_currentUser == null) return const Stream.empty();
     return _firestore
         .collection('users')
-        .doc(_currentUser!.uid)
+        .doc(_currentUser!.uid) // 👈 Milik Kasir
         .collection('cash')
         .snapshots();
   }
@@ -201,31 +244,17 @@ class _HomePageState extends State<HomePage> {
     showDialog(
       context: context,
       builder: (context) {
-        return CashCrudDialog(userId: _currentUser!.uid);
+        return CashCrudDialog(userId: _currentUser!.uid); // 👈 Milik Kasir
       },
     );
   }
 
   Stream<QuerySnapshot> _getPaymentMethodsStream() {
+    if (_currentUser == null) return const Stream.empty();
     return _firestore
         .collection('users')
-        .doc(_currentUser!.uid)
+        .doc(_currentUser!.uid) // 👈 Milik Kasir
         .collection('payment_methods')
-        .snapshots();
-  }
-
-  Stream<QuerySnapshot> _getTransactionsStream() {
-    return _firestore
-        .collection('transactions')
-        .where('uid_user', isEqualTo: _currentUser!.uid)
-        .snapshots();
-  }
-
-  Stream<QuerySnapshot> _getTransactionMethodsStream() {
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(_currentUser!.uid)
-        .collection('transaction_methods')
         .snapshots();
   }
 
@@ -235,6 +264,8 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _selectedPaymentMethod = null;
       _selectedRekening = null;
+      _selectedCashAccount = null;
+      // Jangan reset metode transaksi
     });
   }
 
@@ -243,18 +274,25 @@ class _HomePageState extends State<HomePage> {
     showDialog(
       context: context,
       builder: (context) {
-        return RekeningCrudDialog(userId: _currentUser!.uid);
+        return RekeningCrudDialog(userId: _currentUser!.uid); // 👈 Milik Kasir
       },
     );
   }
 
+  // --- ✅ FUNGSI SUBMIT DENGAN PERBAIKAN ---
   Future<void> _submitTransaction() async {
+    print("--- SUBMIT DITEKAN ---");
+    print(
+        "Rekening yang tersimpan: ${_selectedRekening?.name}, ID: ${_selectedRekening?.id}");
+    print(
+        "Cash yang tersimpan: ${_selectedCashAccount?.name}, ID: ${_selectedCashAccount?.id}");
+
+    // 1. Validasi yang Diperbaiki (Cash wajib untuk semua)
     if (_currentUser == null ||
         _selectedTransactionMethod == null ||
         _selectedPaymentMethod == null ||
         _selectedRekening == null ||
-        (_selectedTransactionMethod == 'Tarik Tunai' &&
-            _selectedCashAccount == null) ||
+        _selectedCashAccount == null || // <-- WAJIB UNTUK SEMUA TRANSAKSI
         _hargaBeliController.text.isEmpty ||
         _biayaAdminDalamController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -270,106 +308,96 @@ class _HomePageState extends State<HomePage> {
 
     try {
       final hargaBeli = int.parse(
-        _hargaBeliController.text.replaceAll('.', ''),
+        _hargaBeliController.text.replaceAll(RegExp(r'[^\d]'), ''),
       );
       final biayaAdminDalam = int.parse(
-        _biayaAdminDalamController.text.replaceAll('.', ''),
+        _biayaAdminDalamController.text.replaceAll(RegExp(r'[^\d]'), ''),
       );
-      final biayaAdmin = _selectedPaymentMethod!.fee;
+      final biayaAdmin = _selectedPaymentMethod!.fee; // Ini adalah Fee
 
       final uangBersih = (hargaBeli + biayaAdminDalam) - biayaAdmin;
-
       final uangProfit = biayaAdminDalam - biayaAdmin;
-
       final uangKotor = hargaBeli + biayaAdminDalam;
 
-      // Siapkan data untuk transaksi baru
+      // 2. Data Transaksi (termasuk uid_admin_agen untuk laporan)
       final transactionData = {
-        'uid_user': _currentUser!.uid,
+        'uid_user': _currentUser!.uid, // Milik Kasir
+        'uid_admin_agen': _adminAgenId, // ID Admin Agen (dari initState)
         'uid_rekening': _selectedRekening!.id,
         'nama_rekening': _selectedRekening!.name,
-        'uid_cash': _selectedCashAccount?.id,
-        'nama_cash': _selectedCashAccount?.name,
+        'uid_cash': _selectedCashAccount!.id,
+        'nama_cash': _selectedCashAccount!.name,
         'nama_transaction_method': _selectedTransactionMethod,
         'harga_beli': hargaBeli,
         'harga_jual_admin': biayaAdminDalam,
         'nama_payment_method': _selectedPaymentMethod!.name,
-        'biaya_admin': biayaAdmin,
+        'biaya_admin_fee': biayaAdmin,
         'uang_profit': uangProfit,
         'uang_bersih': uangBersih,
         'uang_kotor': uangKotor,
         'timestamp': FieldValue.serverTimestamp(),
       };
 
-      // Referensi ke dokumen rekening yang akan diupdate
+      // 3. Gunakan Sequential Write (BUKAN BATCH)
+
+      // Operasi 1: Buat Transaksi
+      final newTransactionRef = _firestore.collection('transactions').doc();
+      print("Attempting to set transaction at path: ${newTransactionRef.path}");
+      await newTransactionRef.set(transactionData);
+      print("Transaction set successfully.");
+
+      // Operasi 2 & 3: Update Saldo (Path menggunakan _currentUser!.uid)
       final rekeningRef = _firestore
           .collection('users')
-          .doc(_currentUser!.uid)
+          .doc(_currentUser!.uid) // 👈 Milik Kasir
           .collection('rekening')
           .doc(_selectedRekening!.id);
-
-      WriteBatch batch = _firestore.batch();
-
-      batch.set(_firestore.collection('transactions').doc(), transactionData);
+      final cashRef = _firestore
+          .collection('users')
+          .doc(_currentUser!.uid) // 👈 Milik Kasir
+          .collection('cash')
+          .doc(_selectedCashAccount!.id);
 
       if (_selectedTransactionMethod == 'Tarik Tunai') {
-        print("DEBUG: Menjalankan logika Tarik Tunai");
+        print("DEBUG: Menjalankan logika Tarik Tunai (Sequential)");
+        print("Attempting to update cash at path: ${cashRef.path}");
+        await cashRef.update({'saldo': FieldValue.increment(-hargaBeli)});
 
-        final rekeningRef = _firestore
-            .collection('users')
-            .doc(_currentUser!.uid)
-            .collection('rekening')
-            .doc(_selectedRekening!.id);
-        final cashRef = _firestore
-            .collection('users')
-            .doc(_currentUser!.uid)
-            .collection('cash')
-            .doc(_selectedCashAccount!.id);
-
-        // Saldo Kas Tunai berkurang sebesar jumlah yang diambil pelanggan
-        batch.update(cashRef, {'saldo': FieldValue.increment(-hargaBeli)});
-
-        // Saldo Rekening bertambah sebesar profit
-        batch.update(rekeningRef, {'saldo': FieldValue.increment(uangBersih)});
+        print("Attempting to update rekening at path: ${rekeningRef.path}");
+        await rekeningRef.update({'saldo': FieldValue.increment(uangBersih)});
       } else {
         // Skenario 2: Metode Lain (misal: Setor Tunai, Transfer)
-        print("DEBUG: Menjalankan logika Setor Tunai/Transfer");
+        print("DEBUG: Menjalankan logika Setor Tunai/Transfer (Sequential)");
 
-        // Referensi ke rekening (sumber dana digital) dan kas (tujuan profit)
-        final rekeningRef = _firestore
-            .collection('users')
-            .doc(_currentUser!.uid)
-            .collection('rekening')
-            .doc(_selectedRekening!.id);
-        final cashRef = _firestore
-            .collection('users')
-            .doc(_currentUser!.uid)
-            .collection('cash')
-            .doc(_selectedCashAccount!.id);
+        // ✅ PERBAIKAN 1: Saldo Rekening (digital) berkurang sebesar JUMLAH + FEE
+        final int totalPengeluaranRekening = hargaBeli + biayaAdmin;
 
-        // Saldo Rekening berkurang sebesar total pengeluaran
-        batch.update(rekeningRef,
-            {'saldo': FieldValue.increment(-hargaBeli)}); 
+        print("Attempting to update rekening at path: ${rekeningRef.path}");
+        await rekeningRef
+            .update({'saldo': FieldValue.increment(-totalPengeluaranRekening)});
 
-        // Saldo Kas Tunai bertambah sebesar profit
-        batch.update(cashRef, {'saldo': FieldValue.increment(uangBersih)});
+        // ✅ PERBAIKAN 2: Saldo Kas Tunai (laci) bertambah sebesar Uang Kotor
+        print("Attempting to update cash at path: ${cashRef.path}");
+        await cashRef.update({'saldo': FieldValue.increment(uangKotor)});
       }
 
-      // Jalankan kedua operasi
-      await batch.commit();
-
+      // Jika semua berhasil
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Transaksi berhasil disimpan!'),
           backgroundColor: Colors.green,
         ),
       );
-
       _clearForm();
     } catch (e) {
+      print("ERROR _submitTransaction (Sequential): $e");
+      String errorMessage = 'Gagal menyimpan transaksi: $e';
+      if (e is FirebaseException) {
+        errorMessage = 'Gagal menyimpan transaksi: ${e.message ?? e.code}';
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Gagal menyimpan transaksi: $e'),
+          content: Text(errorMessage),
           backgroundColor: Colors.red,
         ),
       );
@@ -385,13 +413,6 @@ class _HomePageState extends State<HomePage> {
     _hargaBeliController.dispose();
     _biayaAdminDalamController.dispose();
     super.dispose();
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _selectedTransactionMethod = _staticTransactionMethods[0];
-    _combinedMethodsFuture = _getCombinedTransactionMethods();
   }
 
   @override
@@ -420,44 +441,15 @@ class _HomePageState extends State<HomePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            FutureBuilder<QuerySnapshot>(
-              future: _firestore
-                  .collection('users')
-                  .where('uid', isEqualTo: _currentUser!.uid)
-                  .limit(1)
-                  .get(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Text(
-                    'Memuat...',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                  );
-                }
-                if (!snapshot.hasData || snapshot.hasError) {
-                  return const Text(
-                    'Selamat Datang 👋🏻',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                  );
-                }
-
-                // Jika data berhasil diambil, tampilkan nama pengguna
-                final userDoc = snapshot.data!.docs.first;
-                final userData = userDoc.data() as Map<String, dynamic>;
-
-                print("--- DEBUG DATA PENGGUNA DARI FIRESTORE ---");
-                print(userData);
-                print("------------------------------------------");
-
-                final userName = userData['name'] ?? 'Pengguna';
-
-                return Text(
-                  'Selamat Datang, $userName 👋🏻',
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                );
-              },
+            // Tampilkan nama (diambil dari initState)
+            Text(
+              _kasirName == null
+                  ? 'Memuat...'
+                  : 'Selamat Datang, $_kasirName 👋🏻',
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 16),
             Row(
@@ -484,7 +476,8 @@ class _HomePageState extends State<HomePage> {
                       Navigator.pushNamed(
                         context,
                         '/laporan',
-                        arguments: _currentUser!.uid,
+                        // Kirim ID Kasir (karena Kasir mengelola datanya sendiri)
+                        arguments: _adminAgenId,
                       );
                     },
                     style: ElevatedButton.styleFrom(
@@ -524,14 +517,28 @@ class _HomePageState extends State<HomePage> {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
+                if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                  return const Text('Metode transaksi belum diatur.');
+                }
 
-                final List<String> methodsList =
-                    snapshot.hasData && snapshot.data!.isNotEmpty
-                        ? snapshot.data!
-                        : _staticTransactionMethods;
+                final List<String> methodsList = snapshot.data!;
+
+                // Logika untuk memastikan 'value' valid
+                String? currentSelection = _selectedTransactionMethod;
+                if (!methodsList.contains(currentSelection)) {
+                  currentSelection = methodsList[0];
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted &&
+                        _selectedTransactionMethod != currentSelection) {
+                      setState(() {
+                        _selectedTransactionMethod = currentSelection;
+                      });
+                    }
+                  });
+                }
 
                 return DropdownButtonFormField<String>(
-                  initialValue: _selectedTransactionMethod,
+                  value: currentSelection, // ✅ Gunakan value
                   hint: const Text('Metode Transaksi'),
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
@@ -547,7 +554,6 @@ class _HomePageState extends State<HomePage> {
                     setState(() {
                       _selectedTransactionMethod = newValue;
                     });
-                    // _checkFormCompletion();
                   },
                   validator: (value) =>
                       value == null ? 'Metode transaksi wajib diisi' : null,
@@ -560,16 +566,25 @@ class _HomePageState extends State<HomePage> {
             StreamBuilder<QuerySnapshot>(
               stream: _getPaymentMethodsStream(),
               builder: (context, snapshot) {
-                if (!snapshot.hasData) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
+                }
+                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                  return const Text('Tujuan Pembayaran belum diatur.');
                 }
 
                 var paymentMethods = snapshot.data!.docs
                     .map((doc) => PaymentMethod.fromFirestore(doc))
                     .toList();
 
+                // Reset selection if current selection is no longer valid
+                if (_selectedPaymentMethod != null &&
+                    !paymentMethods.contains(_selectedPaymentMethod)) {
+                  _selectedPaymentMethod = null;
+                }
+
                 return DropdownButtonFormField<PaymentMethod>(
-                  initialValue: _selectedPaymentMethod,
+                  value: _selectedPaymentMethod, // ✅ Gunakan value
                   hint: const Text('Tujuan Pembayaran'),
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
@@ -593,14 +608,24 @@ class _HomePageState extends State<HomePage> {
             StreamBuilder<QuerySnapshot>(
               stream: _getRekeningStream(),
               builder: (context, snapshot) {
-                if (!snapshot.hasData) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
+                }
+                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                  return const Text('Sumber Dana (Rekening) belum diatur.');
                 }
                 var rekeningList = snapshot.data!.docs
                     .map((doc) => Rekening.fromFirestore(doc))
                     .toList();
+
+                // Reset selection if current selection is no longer valid
+                if (_selectedRekening != null &&
+                    !rekeningList.contains(_selectedRekening)) {
+                  _selectedRekening = null;
+                }
+
                 return DropdownButtonFormField<Rekening>(
-                  initialValue: _selectedRekening,
+                  value: _selectedRekening, // ✅ Gunakan value
                   hint: const Text('Sumber Dana (Rekening)'),
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
@@ -612,25 +637,29 @@ class _HomePageState extends State<HomePage> {
                       child: Text(rekening.name),
                     );
                   }).toList(),
-                  onChanged: (Rekening? newValue) =>
-                      setState(() => _selectedRekening = newValue),
+                  onChanged: (Rekening? newValue) {
+                    print(
+                        "Rekening dipilih: ${newValue?.name}, ID: ${newValue?.id}");
+                    setState(() => _selectedRekening = newValue);
+                  },
                   validator: (value) => value == null ? 'Wajib diisi' : null,
                 );
               },
             ),
             const SizedBox(height: 8),
 
-            // Dropdown Rekening Cash (Hanya tampil jika metode transaksi adalah "Tarik Tunai")
+            // Dropdown Rekening Cash
             StreamBuilder<QuerySnapshot>(
-              stream: _firestore
-                  .collection('users')
-                  .doc(_currentUser!.uid)
-                  .collection('cash')
-                  .snapshots(),
+              stream: _getCashStream(), // 👈 Gunakan _getCashStream
               builder: (context, snapshot) {
-                if (!snapshot.hasData) return const SizedBox.shrink();
-                if (snapshot.data!.docs.isEmpty) {
-                  return const Text('Anda belum memiliki akun kas tunai.',
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8.0),
+                    child: LinearProgressIndicator(),
+                  );
+                }
+                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                  return const Text('Akun kas tunai belum diatur.',
                       style: TextStyle(color: Colors.red));
                 }
 
@@ -638,11 +667,17 @@ class _HomePageState extends State<HomePage> {
                     .map((doc) => Cash.fromFirestore(doc))
                     .toList();
 
+                // Reset selection if current selection is no longer valid
+                if (_selectedCashAccount != null &&
+                    !cashList.contains(_selectedCashAccount)) {
+                  _selectedCashAccount = null;
+                }
+
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 16.0),
                   child: DropdownButtonFormField<Cash>(
-                    initialValue: _selectedCashAccount,
-                    hint: const Text('Pilih Rekening Cash'),
+                    value: _selectedCashAccount, // ✅ Gunakan value
+                    hint: const Text('Pilih Kas Tunai'),
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.wallet_giftcard),
@@ -652,14 +687,14 @@ class _HomePageState extends State<HomePage> {
                           value: cash, child: Text(cash.name));
                     }).toList(),
                     onChanged: (Cash? newValue) {
+                      print(
+                          "Cash dipilih: ${newValue?.name}, ID: ${newValue?.id}");
                       setState(() {
                         _selectedCashAccount = newValue;
                       });
-                      // _checkFormCompletion();
                     },
-                    validator: (value) => value == null
-                        ? 'Rekening tujuan profit wajib diisi'
-                        : null,
+                    validator: (value) =>
+                        value == null ? 'Kas tunai wajib diisi' : null,
                   ),
                 );
               },
@@ -690,21 +725,21 @@ class _HomePageState extends State<HomePage> {
                 CurrencyInputFormatter(),
               ],
               decoration: const InputDecoration(
-                labelText: 'Biaya Admin',
+                labelText: 'Biaya Admin (dari Pelanggan)',
                 border: OutlineInputBorder(),
                 prefixText: 'Rp ',
               ),
             ),
             const SizedBox(height: 8),
 
-            // Tampilan Biaya Admin
+            // Tampilan Biaya Admin (Fee)
             if (_selectedPaymentMethod != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8.0),
                 child: Text(
-                  'Biaya Admin: ${_currencyFormatter.format(_selectedPaymentMethod!.fee)}',
+                  'Biaya Fee (memotong saldo): ${_currencyFormatter.format(_selectedPaymentMethod!.fee)}',
                   style: const TextStyle(
-                    color: Colors.black,
+                    color: Colors.red,
                     fontStyle: FontStyle.italic,
                   ),
                 ),
@@ -718,59 +753,67 @@ class _HomePageState extends State<HomePage> {
                 onPressed: _isSubmitting ? null : _submitTransaction,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.blue.shade400,
+                  foregroundColor: Colors.white,
                 ),
                 child: _isSubmitting
                     ? const CircularProgressIndicator(color: Colors.white)
                     : const Text(
                         'SUBMIT TRANSAKSI',
                         style: TextStyle(
-                          color: Colors.white,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
               ),
             ),
             const SizedBox(height: 16),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.pushNamed(
-                    context,
-                    '/transaction-method',
-                    arguments: _currentUser!.uid,
-                  );
-                },
-                icon: const Icon(Icons.settings, size: 20),
-                label: const Text('Atur Metode Transaksi'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue.shade400,
-                  foregroundColor: Colors.white,
-                  elevation: 2,
-                ),
-              ),
-            ),
+
+            // Tombol Pengaturan
+            const Divider(),
             const SizedBox(height: 10),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.pushNamed(
-                    context,
-                    '/payment-method',
-                    arguments: _currentUser!.uid,
-                  );
-                },
-                icon: const Icon(Icons.settings, size: 20),
-                label: const Text('Atur Tujuan Pembayaran'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue.shade400,
-                  foregroundColor: Colors.white,
-                  shape: const StadiumBorder(),
-                  elevation: 2,
+            Text("Pengaturan",
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey[700])),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8.0,
+              runSpacing: 8.0,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pushNamed(
+                      context,
+                      '/transaction-method',
+                      arguments: _currentUser!.uid,
+                    );
+                  },
+                  icon: const Icon(Icons.settings, size: 20),
+                  label: const Text('Atur Metode Transaksi'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey[200],
+                    foregroundColor: Colors.black,
+                    elevation: 2,
+                  ),
                 ),
-              ),
-            ),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pushNamed(
+                      context,
+                      '/payment-method',
+                      arguments: _currentUser!.uid,
+                    );
+                  },
+                  icon: const Icon(Icons.settings, size: 20),
+                  label: const Text('Atur Tujuan Pembayaran'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey[200],
+                    foregroundColor: Colors.black,
+                    elevation: 2,
+                  ),
+                ),
+              ],
+            )
           ],
         ),
       ),
@@ -795,7 +838,8 @@ class _HomePageState extends State<HomePage> {
               children: [
                 Text(
                   title,
-                  style: TextStyle(
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
                     fontSize: 14,
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
@@ -807,12 +851,22 @@ class _HomePageState extends State<HomePage> {
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return const SizedBox(
-                        height: 24,
-                        width: 24,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        height: 15,
+                        width: 15,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
                       );
                     }
-                    if (!snapshot.hasData) return const Text('Error');
+                    if (!snapshot.hasData || snapshot.hasError) {
+                      return const Text(
+                        'Rp 0',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      );
+                    }
 
                     int totalValue = 0;
                     for (var doc in snapshot.data!.docs) {
